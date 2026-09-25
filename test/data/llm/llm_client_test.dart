@@ -146,6 +146,20 @@ void main() {
     expect(DioLlmClient.extractContent(data), 'hello world');
   });
 
+  test('extractContent 透出网关错误包（余额/额度类 429 带 200 包）', () {
+    final data = {
+      'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}
+    };
+    expect(
+      () => DioLlmClient.extractContent(data),
+      throwsA(isA<FormatException>().having(
+        (e) => e.message,
+        'message',
+        'API 错误 1113：余额不足或无可用资源包,请充值。',
+      )),
+    );
+  });
+
   test('extractJson 剥 markdown 围栏与前后杂质', () {
     expect(DioLlmClient.extractJson('```json\n{"a":1}\n```'), '{"a":1}');
     expect(DioLlmClient.extractJson('好的，结果如下：{"a": {"b": 2}} 请查收'),

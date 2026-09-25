@@ -95,6 +95,12 @@ class DioLlmClient implements LlmGateway {
   static String extractContent(Map<String, dynamic> data) {
     final choices = data['choices'] as List?;
     if (choices == null || choices.isEmpty) {
+      // 网关错误包（{"error":{"code","message"}}）原样透出，否则无从排查
+      final err = data['error'];
+      if (err is Map) {
+        throw FormatException(
+            'API 错误 ${err['code'] ?? ''}：${err['message'] ?? '未知错误'}');
+      }
       throw const FormatException('响应缺少 choices');
     }
     final message = choices.first['message'] as Map<String, dynamic>?;
