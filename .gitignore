@@ -55,3 +55,4 @@ windows/flutter/ephemeral/
 
 # Scratch npm workspace only used to vendor the osmd bundle into assets/
 third_party/
+/android/build/
