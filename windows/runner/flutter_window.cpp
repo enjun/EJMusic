@@ -16,6 +16,11 @@ bool FlutterWindow::OnCreate() {
 
   RECT frame = GetClientArea();
 
+  // Impeller(OpenGL) fails to present the first frame on some older GPUs,
+  // so SetNextFrameCallback never fires and the window stays hidden
+  // forever. Fall back to the Skia backend.
+  project_.set_impeller_switch(flutter::ImpellerSwitch::Disabled);
+
   // The size here must match the window dimensions to avoid unnecessary surface
   // creation / destruction in the startup path.
   flutter_controller_ = std::make_unique<flutter::FlutterViewController>(
