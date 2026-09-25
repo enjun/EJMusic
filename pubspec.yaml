@@ -47,6 +47,7 @@ dependencies:
   dio: ^5.11.1
   flutter_inappwebview: ^6.1.5
   soundpool: ^2.4.1
+  wakelock_plus: ^1.2.0
 
 dev_dependencies:
   flutter_test:

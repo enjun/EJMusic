@@ -72,7 +72,8 @@ EventTimeline buildTimeline(ScoreDocument doc) {
     }
     starts.add(acc);
     beatsOf.add(curBeats);
-    acc += curBeats;
+    // Rational.+/ 不约分，长曲逐小节累加分母指数膨胀溢出
+    acc = (acc + curBeats).reduced();
   }
 
   // 2) 反复/volta 展开为原谱小节下标序列
@@ -100,7 +101,8 @@ EventTimeline buildTimeline(ScoreDocument doc) {
             durByOnset[t] = e.dur;
           }
         }
-        t += e.dur;
+        // 逐事件累加不约分会溢出分母
+        t = (t + e.dur).reduced();
       }
     }
     for (final onset in midisByOnset.keys) {
@@ -113,7 +115,7 @@ EventTimeline buildTimeline(ScoreDocument doc) {
         measureNumber: m.number,
       ));
     }
-    expandedQ += beats;
+    expandedQ = (expandedQ + beats).reduced();
   }
 
   notes.sort((a, b) => a.startQ.compareTo(b.startQ));

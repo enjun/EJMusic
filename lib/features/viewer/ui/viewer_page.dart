@@ -1,10 +1,11 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/render/sheet_webview.dart';
+import '../../../domain/score/convert/split_volume.dart';
+import '../../../domain/score/convert/to_musicxml.dart';
+import '../../generation/logic/generation_controller.dart';
 import '../../library/library_providers.dart';
 
 final _sheetControllerProvider = Provider.autoDispose<SheetWebviewController>((ref) {
@@ -13,7 +14,7 @@ final _sheetControllerProvider = Provider.autoDispose<SheetWebviewController>((r
   return c;
 });
 
-/// 曲谱查看器：WebView 内嵌 osmd-extended 渲染 MusicXML。
+/// 曲谱查看器：WebView 内嵌 osmd-extended 渲染 MusicXML；长曲自动分册。
 class ViewerPage extends ConsumerStatefulWidget {
   const ViewerPage({super.key, required this.songId});
 
@@ -28,18 +29,68 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
   String? _error;
   int? _totalSteps;
 
+  List<ScoreVolume>? _volumes;
+  int _volumeIndex = 0;
+  final _volumeXml = <int, String>{};
+  Future<String>? _htmlFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDoc();
+  }
+
+  Future<void> _loadDoc() async {
+    try {
+      final store = await ref.read(scoreStoreProvider.future);
+      final doc = await store.load(widget.songId);
+      if (doc == null) throw Exception('曲谱尚未制作完成，请先完成「制作曲谱」');
+      final vols = splitIntoVolumes(doc);
+      if (!mounted) return;
+      setState(() => _volumes = vols);
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  String _xmlFor(int index) {
+    return _volumeXml.putIfAbsent(
+        index, () => scoreToMusicXml(_volumes![index].document));
+  }
+
   @override
   Widget build(BuildContext context) {
     final songAsync = ref.watch(songProvider(widget.songId));
     final controller = ref.watch(_sheetControllerProvider);
-
     final song = songAsync.value;
-    final xmlPath = song?.musicxmlCachePath;
+
+    final volumes = _volumes;
+    final total = volumes?.length ?? 0;
 
     return Scaffold(
       appBar: AppBar(
         title: Text(song?.title ?? '曲谱'),
         actions: [
+          if (total > 1) ...[
+            IconButton(
+              tooltip: '上一册',
+              icon: const Icon(Icons.navigate_before),
+              onPressed: _volumeIndex > 0
+                  ? () => _switchVolume(controller, _volumeIndex - 1)
+                  : null,
+            ),
+            Center(
+              child: Text('第 ${_volumeIndex + 1}/$total 册',
+                  style: const TextStyle(fontSize: 14)),
+            ),
+            IconButton(
+              tooltip: '下一册',
+              icon: const Icon(Icons.navigate_next),
+              onPressed: _volumeIndex < total - 1
+                  ? () => _switchVolume(controller, _volumeIndex + 1)
+                  : null,
+            ),
+          ],
           IconButton(
             icon: const Icon(Icons.zoom_out),
             tooltip: '缩小',
@@ -62,25 +113,22 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
               padding: const EdgeInsets.all(24),
               child: Text('渲染失败：$_error', textAlign: TextAlign.center),
             ))
-          : _buildWebView(controller, xmlPath),
+          : volumes == null
+              ? const Center(child: CircularProgressIndicator())
+              : _buildWebView(controller),
     );
   }
 
-  Widget _buildWebView(SheetWebviewController controller, String? xmlPath) {
-    if (xmlPath == null || !File(xmlPath).existsSync()) {
-      return const Center(child: Text('曲谱尚未制作完成，请先完成「制作曲谱」'));
-    }
-    // 宿主页与曲谱一并预载；WebView2 不支持 file:// initialFile，用 initialData 内联 JS
-    final htmlFuture = buildSheetHostHtml();
-    final xmlFuture = File(xmlPath).readAsString();
-    return FutureBuilder<List<String>>(
-      future: Future.wait([htmlFuture, xmlFuture]),
+  Widget _buildWebView(SheetWebviewController controller) {
+    // 宿主页只加载一次；曲谱按册经 loadMusicXml 注入
+    _htmlFuture ??= buildSheetHostHtml();
+    return FutureBuilder<String>(
+      future: _htmlFuture,
       builder: (context, snap) {
         if (!snap.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
-        final html = snap.data![0];
-        final xml = snap.data![1];
+        final html = snap.data!;
         return Stack(
           children: [
             InAppWebView(
@@ -111,7 +159,7 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
               onLoadStop: (_, _) async {
                 await controller.pageReady;
                 await controller.setZoom(_zoom);
-                await controller.loadMusicXml(xml);
+                await controller.loadMusicXml(_xmlFor(_volumeIndex));
               },
             ),
             if (_totalSteps != null)
@@ -135,6 +183,16 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
         );
       },
     );
+  }
+
+  Future<void> _switchVolume(SheetWebviewController controller, int index) async {
+    if (_volumes == null || index < 0 || index >= _volumes!.length) return;
+    setState(() {
+      _volumeIndex = index;
+      _totalSteps = null;
+    });
+    await controller.loadMusicXml(_xmlFor(index));
+    await controller.setZoom(_zoom);
   }
 
   void _onSheetEvent(SheetEvent event) {

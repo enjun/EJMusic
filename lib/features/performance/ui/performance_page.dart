@@ -1,14 +1,17 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../../core/audio/piano_audio.dart';
+import '../../../core/util/rational.dart';
 import '../../../data/render/sheet_webview.dart';
 import '../../../domain/performance/follow_judge.dart';
+import '../../../domain/score/convert/split_volume.dart';
 import '../../../domain/score/convert/to_event_timeline.dart';
+import '../../../domain/score/convert/to_musicxml.dart';
 import '../../generation/logic/generation_controller.dart';
 import '../../library/library_providers.dart';
 import '../logic/playback_engine.dart';
@@ -52,7 +55,11 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
   bool _loading = true;
   int _cursorStep = -1;
   int _documentBpm = 88;
-  Future<List<String>>? _scoreHost;
+  Future<String>? _htmlFuture;
+
+  List<ScoreVolume>? _volumes;
+  int _volumeIndex = 0;
+  final _volumeXml = <int, String>{};
 
   int _kbLow = 48;
   int _kbHigh = 83;
@@ -76,6 +83,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
       final timeline = buildTimeline(doc);
       if (timeline.notes.isEmpty) throw Exception('曲谱中没有可演奏的音符');
 
+      final vols = splitIntoVolumes(doc);
       final audio = createPianoAudio();
       await audio.preload();
       if (!mounted) {
@@ -85,11 +93,14 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
       setState(() {
         _timeline = timeline;
         _documentBpm = doc.meta.bpm;
+        _volumes = vols;
         _judge = FollowJudge(notes: timeline.notes, mode: _mode);
         PerformancePage.debugJudge = _judge;
         _audio = audio;
         _fitKeyboard(timeline);
       });
+      // 跟弹时不应熄屏（双手在键盘上，无法点亮屏幕）
+      WakelockPlus.enable();
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } finally {
@@ -137,19 +148,58 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
 
   // ---- 曲谱 WebView ----
 
+  String _xmlFor(int index) => _volumeXml.putIfAbsent(
+      index, () => scoreToMusicXml(_volumes![index].document));
+
+  ScoreVolume _volumeFor(Rational q) {
+    final vols = _volumes!;
+    for (final v in vols) {
+      if (q >= v.startQ && q < v.endQ) return v;
+    }
+    return q < vols.first.startQ ? vols.first : vols.last;
+  }
+
+  void _switchToVolume(int index) {
+    if (_volumeIndex == index) return;
+    setState(() => _volumeIndex = index);
+    _sheetController.loadMusicXml(_xmlFor(index));
+  }
+
+  /// 当前应高光的音符（聆听=引擎下标；跟弹=判定器当前音）。
+  TimelineNote? get _currentNote {
+    if (_timeline == null) return null;
+    if (_mode == FollowMode.listen) {
+      if (_index >= 0 && _index < _timeline!.notes.length) {
+        return _timeline!.notes[_index];
+      }
+      return null;
+    }
+    return _judge?.current;
+  }
+
   void _onSheetEvent(SheetEvent event) {
     if (event is SheetReady) {
       setState(() => _stepQuarters = event.stepQuarters);
+      _resyncCursor();
     } else if (event is SheetError) {
       setState(() => _error = '渲染失败：${event.message}');
     }
   }
 
-  int _stepFor(double originalStartQ) {
+  /// 换册重新渲染完成后，把光标对回当前音符（stepQuarters 已更新）。
+  void _resyncCursor() {
+    final note = _currentNote;
+    if (note == null) return;
+    final local = note.originalStartQ - _volumes![_volumeIndex].startQ;
+    _cursorStep = _stepFor(local.toDouble());
+    _sheetController.cursorTo(_cursorStep);
+  }
+
+  int _stepFor(double localStartQ) {
     var best = -1;
     var bestQ = double.negativeInfinity;
     _stepQuarters.forEach((step, q) {
-      if (q <= originalStartQ + 1e-6 && q > bestQ) {
+      if (q <= localStartQ + 1e-6 && q > bestQ) {
         bestQ = q;
         best = step;
       }
@@ -157,8 +207,13 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     return best < 0 ? 0 : best;
   }
 
-  void _moveCursor(double originalStartQ) {
-    final step = _stepFor(originalStartQ);
+  void _moveCursor(Rational originalStartQ) {
+    final volume = _volumeFor(originalStartQ);
+    if (volume.index != _volumeIndex) {
+      _switchToVolume(volume.index);
+    }
+    final local = originalStartQ - volume.startQ;
+    final step = _stepFor(local.toDouble());
     if (step == _cursorStep) return;
     _cursorStep = step;
     _sheetController.cursorTo(step);
@@ -177,6 +232,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
       _satisfied = {};
       _cursorStep = -1;
     });
+    _switchToVolume(0);
     _sheetController.cursorReset();
   }
 
@@ -188,7 +244,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     });
     final note = judge.current;
     if (note != null) {
-      _moveCursor(note.originalStartQ.toDouble());
+      _moveCursor(note.originalStartQ);
       _slideKeyboardTo(note.midis);
     }
   }
@@ -232,7 +288,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
         }
       });
     }
-    _moveCursor(note.originalStartQ.toDouble());
+    _moveCursor(note.originalStartQ);
     _slideKeyboardTo(note.midis);
     setState(() {
       _index = index;
@@ -243,6 +299,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
   void _onListenEnded() {
     if (!mounted) return;
     setState(() => _playing = false);
+    _switchToVolume(0);
     _sheetController.cursorReset();
   }
 
@@ -306,7 +363,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     final note = judge.current;
     setState(() => _satisfied = {});
     if (note != null) {
-      _moveCursor(note.originalStartQ.toDouble());
+      _moveCursor(note.originalStartQ);
       _slideKeyboardTo(note.midis);
     }
   }
@@ -347,12 +404,32 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
   Widget build(BuildContext context) {
     final songAsync = ref.watch(songProvider(widget.songId));
     final song = songAsync.value;
-    final xmlPath = song?.musicxmlCachePath;
+    final total = _volumes?.length ?? 0;
 
     return Scaffold(
       appBar: AppBar(
         title: Text('演奏 · ${song?.title ?? ''}'),
         actions: [
+          if (total > 1) ...[
+            IconButton(
+              tooltip: '上一册',
+              icon: const Icon(Icons.navigate_before),
+              onPressed: _volumeIndex > 0
+                  ? () => _switchToVolume(_volumeIndex - 1)
+                  : null,
+            ),
+            Center(
+              child: Text('第 ${_volumeIndex + 1}/$total 册',
+                  style: const TextStyle(fontSize: 14)),
+            ),
+            IconButton(
+              tooltip: '下一册',
+              icon: const Icon(Icons.navigate_next),
+              onPressed: _volumeIndex < total - 1
+                  ? () => _switchToVolume(_volumeIndex + 1)
+                  : null,
+            ),
+          ],
           IconButton(
             tooltip: '重新开始',
             icon: const Icon(Icons.replay),
@@ -369,7 +446,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
                 ))
               : Column(
                   children: [
-                    Expanded(child: _buildScore(xmlPath)),
+                    Expanded(child: _buildScore()),
                     _buildControls(),
                     _buildKeyboard(),
                   ],
@@ -379,6 +456,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
 
   void _onResetPressed() {
     _stopAll();
+    _switchToVolume(0);
     _sheetController.cursorReset();
     setState(() {
       _satisfied = {};
@@ -390,14 +468,11 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     }
   }
 
-  Widget _buildScore(String? xmlPath) {
-    if (xmlPath == null || !File(xmlPath).existsSync()) {
-      return const Center(child: Text('曲谱文件缺失'));
-    }
-    // 缓存宿主页+曲谱加载 Future，避免 setState 重建时反复读 2MB JS
-    _scoreHost ??= Future.wait([buildSheetHostHtml(), File(xmlPath).readAsString()]);
-    return FutureBuilder<List<String>>(
-      future: _scoreHost,
+  Widget _buildScore() {
+    // 宿主页只加载一次（稳定 Future，避免 setState 重建 WebView）；曲谱按册注入
+    _htmlFuture ??= buildSheetHostHtml();
+    return FutureBuilder<String>(
+      future: _htmlFuture,
       builder: (context, snap) {
         if (!snap.hasData) {
           return const Center(child: CircularProgressIndicator());
@@ -406,7 +481,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
           children: [
             InAppWebView(
               initialData: InAppWebViewInitialData(
-                data: snap.data![0],
+                data: snap.data!,
                 mimeType: 'text/html',
                 encoding: 'utf-8',
               ),
@@ -427,7 +502,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
               },
               onLoadStop: (_, _) async {
                 await _sheetController.pageReady;
-                await _sheetController.loadMusicXml(snap.data![1]);
+                await _sheetController.loadMusicXml(_xmlFor(_volumeIndex));
               },
             ),
             if (_mode == FollowMode.followAlong && _judge != null)
@@ -544,6 +619,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     _wrongTimer?.cancel();
     _engine?.dispose();
     _audio?.dispose();
+    WakelockPlus.disable();
     super.dispose();
   }
 }
