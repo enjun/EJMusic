@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'features/convert/ui/convert_page.dart';
 import 'features/generation/ui/generation_page.dart';
 import 'features/import/ui/import_page.dart';
 import 'features/library/ui/library_page.dart';
 import 'features/library/ui/song_detail_page.dart';
+import 'features/performance/ui/performance_page.dart';
 import 'features/settings/ui/settings_page.dart';
 import 'features/viewer/ui/viewer_page.dart';
 
@@ -51,6 +53,26 @@ final appRouter = GoRouter(
           return const Scaffold(body: Center(child: Text('无效的曲目 ID')));
         }
         return ViewerPage(songId: id);
+      },
+    ),
+    GoRoute(
+      path: '/song/:id/play',
+      builder: (context, state) {
+        final id = int.tryParse(state.pathParameters['id'] ?? '');
+        if (id == null) {
+          return const Scaffold(body: Center(child: Text('无效的曲目 ID')));
+        }
+        return PerformancePage(songId: id);
+      },
+    ),
+    GoRoute(
+      path: '/song/:id/convert',
+      builder: (context, state) {
+        final id = int.tryParse(state.pathParameters['id'] ?? '');
+        if (id == null) {
+          return const Scaffold(body: Center(child: Text('无效的曲目 ID')));
+        }
+        return ConvertPage(songId: id);
       },
     ),
   ],

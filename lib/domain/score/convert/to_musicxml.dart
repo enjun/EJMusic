@@ -67,7 +67,7 @@ void _writePart(StringBuffer b, ScoreDocument doc, ScorePart part) {
       attrsWritten = true;
       if (a?.bpm != null) {
         b.write('      <direction placement="above"><direction-type>');
-        b.write('<metronome><beat-unit>${doc.meta.beatUnit}</beat-unit>');
+        b.write('<metronome><beat-unit>${_beatUnitName(doc.meta.beatUnit)}</beat-unit>');
         b.write('<per-minute>${a!.bpm}</per-minute></metronome>');
         b.writeln('</direction-type><sound tempo="${a.bpm}"/></direction>');
       }
@@ -220,6 +220,21 @@ int _writeEvent(StringBuffer b, ScoreEvent e, int voiceId, int staff, bool isGui
     b.writeln('</note>');
   }
   return duration;
+}
+
+/// beat-unit 数字 → MusicXML note-type 名（4=quarter）。
+/// OSMD 的 metronome 解析只认 type 字符串，裸数字会导致渲染中断。
+String _beatUnitName(int beatUnit) {
+  const names = {
+    1: 'whole',
+    2: 'half',
+    4: 'quarter',
+    8: 'eighth',
+    16: '16th',
+    32: '32nd',
+    64: '64th',
+  };
+  return names[beatUnit] ?? 'quarter';
 }
 
 String _esc(String s) => s

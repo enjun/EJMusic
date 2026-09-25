@@ -100,36 +100,65 @@ class SongDetailPage extends ConsumerWidget {
   Widget _actionBar(BuildContext context, Song song) {
     final status = songStatusFromName(song.status);
     final generating = status == SongStatus.generating;
-    return Row(
+    final hasScore = song.scorePath != null;
+    return Column(
       children: [
-        Expanded(
-          child: FilledButton.icon(
-            icon: Icon(generating
-                ? Icons.hourglass_top
-                : status == SongStatus.ready || status == SongStatus.partial
-                    ? Icons.refresh
-                    : Icons.auto_fix_high),
-            label: Text(switch (status) {
-              SongStatus.ready ||
-              SongStatus.partial =>
-                song.scorePath == null ? '开始制作' : '重新制作',
-              SongStatus.generating => '制作中…',
-              _ => '开始制作',
-            }),
-            onPressed: generating
-                ? null
-                : () => context.push('/song/$songId/generate'),
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                icon: Icon(generating
+                    ? Icons.hourglass_top
+                    : status == SongStatus.ready || status == SongStatus.partial
+                        ? Icons.refresh
+                        : Icons.auto_fix_high),
+                label: Text(switch (status) {
+                  SongStatus.ready ||
+                  SongStatus.partial =>
+                    song.scorePath == null ? '开始制作' : '重新制作',
+                  SongStatus.generating => '制作中…',
+                  _ => '开始制作',
+                }),
+                onPressed: generating
+                    ? null
+                    : () => context.push('/song/$songId/generate'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.visibility),
+                label: const Text('查看曲谱'),
+                onPressed: song.musicxmlCachePath == null
+                    ? null
+                    : () => context.push('/song/$songId/view'),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: OutlinedButton.icon(
-            icon: const Icon(Icons.visibility),
-            label: const Text('查看曲谱'),
-            onPressed: song.musicxmlCachePath == null
-                ? null
-                : () => context.push('/song/$songId/view'),
-          ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.piano),
+                label: const Text('演奏模式'),
+                onPressed: hasScore
+                    ? () => context.push('/song/$songId/play')
+                    : null,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.swap_horiz),
+                label: const Text('谱式转换'),
+                onPressed: hasScore
+                    ? () => context.push('/song/$songId/convert')
+                    : null,
+              ),
+            ),
+          ],
         ),
       ],
     );

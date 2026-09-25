@@ -46,9 +46,12 @@ dependencies:
   flutter_secure_storage: ^11.2.0
   dio: ^5.11.1
   flutter_inappwebview: ^6.1.5
+  soundpool: ^2.4.1
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  integration_test:
     sdk: flutter
 
   # The "flutter_lints" package below contains a set of recommended lints to
@@ -78,6 +81,7 @@ flutter:
   assets:
     - assets/web/sheet.html
     - assets/web/vendor/
+    - assets/audio/piano/
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see

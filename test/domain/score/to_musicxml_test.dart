@@ -197,4 +197,32 @@ void main() {
     final xml = scoreToMusicXml(doc);
     expect(xml, contains('A&amp;B&lt;C&gt;'));
   });
+
+  test('节拍器 beat-unit 输出 note-type 名而非数字（OSMD 渲染要求）', () {
+    final doc = ScoreDocument(
+      kind: 'piano',
+      meta: ScoreMeta(
+          title: 'T',
+          timeBeats: 4,
+          timeBeatType: 4,
+          bpm: 96,
+          beatUnit: 4),
+      parts: [
+        ScorePart(measures: [
+          ScoreMeasure(
+            number: 1,
+            attributes: MeasureAttributes(bpm: 96),
+            voices: [
+              ScoreVoice(staff: 1, events: [
+                ScoreEvent(type: 'rest', dur: const Rational(4, 1)),
+              ]),
+            ],
+          ),
+        ]),
+      ],
+    );
+    final xml = scoreToMusicXml(doc);
+    expect(xml, contains('<beat-unit>quarter</beat-unit>'));
+    expect(RegExp(r'<beat-unit>\d+</beat-unit>').hasMatch(xml), isFalse);
+  });
 }
