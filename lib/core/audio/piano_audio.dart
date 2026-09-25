@@ -1,11 +1,9 @@
-import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart' show rootBundle;
-import 'package:soundpool/soundpool.dart';
+import 'package:flutter_soloud/flutter_soloud.dart';
 
-/// 钢琴音色抽象：按键出声，便于替换后端（soundpool / flutter_soloud / 静音）。
+/// 钢琴音色抽象：按键出声，便于替换后端（flutter_soloud / 静音）。
 abstract class PianoAudio {
   /// 预加载采样（App 启动或进入演奏页时）。
   Future<void> preload();
@@ -26,23 +24,26 @@ int sampleMidiFor(int midi) {
   return low + idx * step;
 }
 
-/// soundpool 实现（Android / iOS / macOS）。
-class SoundpoolPianoAudio implements PianoAudio {
-  SoundpoolPianoAudio() {
-    _pool = Soundpool.fromOptions(
-      options: const SoundpoolOptions(maxStreams: 8, streamType: StreamType.music),
-    );
-  }
-
-  late final Soundpool _pool;
-  final _soundIds = <int, int>{}; // sampleMidi -> soundId
+/// flutter_soloud 实现（全平台，含 Windows 桌面）。
+class SoloudPianoAudio implements PianoAudio {
+  final _sounds = <int, AudioSource>{}; // sampleMidi -> source
 
   @override
   Future<void> preload() async {
+    try {
+      if (!SoLoud.instance.isInitialized) {
+        await SoLoud.instance.init();
+        // 默认声部数偏少：跟弹双手+延音衰减容易打满
+        SoLoud.instance.setMaxActiveVoiceCount(32);
+      }
+    } catch (_) {
+      // 无音频设备等环境：静音降级，不阻塞演奏流程
+      return;
+    }
     for (var m = 24; m <= 108; m += 4) {
       try {
-        final data = await rootBundle.load('assets/audio/piano/piano_$m.wav');
-        _soundIds[m] = await _pool.load(data);
+        _sounds[m] =
+            await SoLoud.instance.loadAsset('assets/audio/piano/piano_$m.wav');
       } catch (_) {
         // 缺失采样跳过
       }
@@ -52,11 +53,18 @@ class SoundpoolPianoAudio implements PianoAudio {
   @override
   void noteOn(int midi, {double velocity = 1.0}) {
     final sample = sampleMidiFor(midi);
-    final id = _soundIds[sample];
-    if (id == null) return;
-    // 变调：目标音与采样音相差的半音数 → 频率比
+    final sound = _sounds[sample];
+    if (sound == null) return;
+    // 变调：目标音与采样音相差的半音数 → 频率比。
+    // 先 paused 出声部、设变速再恢复，避免变速前的原速起音泄漏。
     final rate = math.pow(2.0, (midi - sample) / 12.0).toDouble();
-    _pool.play(id, rate: rate);
+    try {
+      final handle = SoLoud.instance.play(sound, paused: true);
+      SoLoud.instance.setRelativePlaySpeed(handle, rate);
+      SoLoud.instance.setPause(handle, false);
+    } catch (_) {
+      // 声部耗尽等播放失败静默
+    }
   }
 
   @override
@@ -64,11 +72,14 @@ class SoundpoolPianoAudio implements PianoAudio {
 
   @override
   void dispose() {
-    _pool.dispose();
+    if (SoLoud.instance.isInitialized) {
+      SoLoud.instance.deinit();
+    }
+    _sounds.clear();
   }
 }
 
-/// 桌面端占位实现（Windows/Linux 无 soundpool）：不出声，接口可用。
+/// 兜底占位实现：不出声，接口可用（Web 等）。
 class SilentPianoAudio implements PianoAudio {
   @override
   Future<void> preload() async {}
@@ -85,8 +96,5 @@ class SilentPianoAudio implements PianoAudio {
 
 PianoAudio createPianoAudio() {
   if (kIsWeb) return SilentPianoAudio();
-  if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
-    return SoundpoolPianoAudio();
-  }
-  return SilentPianoAudio();
+  return SoloudPianoAudio();
 }

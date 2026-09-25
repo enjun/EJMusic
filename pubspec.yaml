@@ -47,8 +47,14 @@ dependencies:
   dio: ^5.11.1
   # 6.2.0-beta：flutter_inappwebview_android 1.2 才改用 proguard-android-optimize.txt，AGP 9 下 6.1.5 无法构建
   flutter_inappwebview: 6.2.0-beta.3
-  soundpool: ^2.4.1
   wakelock_plus: ^1.2.0
+  flutter_soloud: ^5.1.2
+
+# 只播 WAV 采样，无需 Opus/Ogg：跳过 Xiph 预编译库的 GitHub 下载（本机网络不通）
+hooks:
+  user_defines:
+    flutter_soloud:
+      no_xiph_libs: true
 
 dev_dependencies:
   flutter_test:
