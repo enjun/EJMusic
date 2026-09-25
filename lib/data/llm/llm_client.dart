@@ -26,7 +26,9 @@ class DioLlmClient implements LlmGateway {
   })  : _dio = dio ??
             Dio(BaseOptions(
               connectTimeout: const Duration(seconds: 15),
-              receiveTimeout: const Duration(seconds: 300),
+              // 非流式响应下服务端要等模型全部生成完才回包，
+              // 整页识别即使关思考也可能超过 5 分钟，超时=整次请求作废
+              receiveTimeout: const Duration(seconds: 900),
               // 网关错误可能返回 HTML/纯文本，手动 JSON 解析以免 dio 内部抛解析异常
               responseType: ResponseType.plain,
             )),
@@ -58,8 +60,9 @@ class DioLlmClient implements LlmGateway {
       };
       body = {
         'model': config.model,
-        // 思考型模型（如 glm-5.3-flash）的思考 token 也计入 max_tokens，
-        // 制谱 JSON 本身可达数千 token，给足余量
+        // glm-5.3-flash 默认开思考，整页识别要"想"几分钟且思考 token
+        // 也计入 max_tokens；制谱是结构化抽取，关思考实测可用且快数倍
+        'thinking': {'type': 'disabled'},
         'max_tokens': 32768,
         'temperature': 0.1,
         'system': system,

@@ -208,6 +208,7 @@ void main() {
     expect(req['headers']['anthropic-version'], '2023-06-01');
     final body = req['body'] as Map<String, dynamic>;
     expect(body['model'], 'glm-5.3-flash');
+    expect((body['thinking'] as Map)['type'], 'disabled');
     expect(body['max_tokens'], greaterThanOrEqualTo(16384));
     expect(body['system'], 'sys');
     final messages = body['messages'] as List;
