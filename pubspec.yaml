@@ -45,7 +45,8 @@ dependencies:
   shared_preferences: ^2.5.5
   flutter_secure_storage: ^11.2.0
   dio: ^5.11.1
-  flutter_inappwebview: ^6.1.5
+  # 6.2.0-beta：flutter_inappwebview_android 1.2 才改用 proguard-android-optimize.txt，AGP 9 下 6.1.5 无法构建
+  flutter_inappwebview: 6.2.0-beta.3
   soundpool: ^2.4.1
   wakelock_plus: ^1.2.0
 
