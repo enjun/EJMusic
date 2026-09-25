@@ -15,6 +15,8 @@ abstract class LlmGateway {
 }
 
 /// OpenAI 兼容 /chat/completions 客户端（国内大模型通协议）。
+/// Base URL 含 "/anthropic" 时自动切换 Anthropic Messages 协议
+/// （如智谱编码套餐 https://open.bigmodel.cn/api/anthropic）。
 /// 429/5xx/超时自动指数退避重试。
 class DioLlmClient implements LlmGateway {
   DioLlmClient({
@@ -24,7 +26,7 @@ class DioLlmClient implements LlmGateway {
   })  : _dio = dio ??
             Dio(BaseOptions(
               connectTimeout: const Duration(seconds: 15),
-              receiveTimeout: const Duration(seconds: 180),
+              receiveTimeout: const Duration(seconds: 300),
               // 网关错误可能返回 HTML/纯文本，手动 JSON 解析以免 dio 内部抛解析异常
               responseType: ResponseType.plain,
             )),
@@ -44,37 +46,71 @@ class DioLlmClient implements LlmGateway {
     if (!config.isConfigured) {
       throw LlmConfigException('未配置大模型 API（base_url / api_key / model）');
     }
-    final content = <Map<String, dynamic>>[
-      {'type': 'text', 'text': user},
-      for (final b64 in imageJpegBase64)
-        {
-          'type': 'image_url',
-          'image_url': {'url': 'data:image/jpeg;base64,$b64'},
-        },
-    ];
-    final body = <String, dynamic>{
-      'model': config.model,
-      'temperature': 0.1,
-      'response_format': {'type': 'json_object'},
-      'messages': [
-        {'role': 'system', 'content': system},
-        {'role': 'user', 'content': content},
-      ],
-    };
+    final anthropic = config.baseUrl.contains('/anthropic');
+    final String url;
+    final Map<String, String> headers;
+    final Map<String, dynamic> body;
+    if (anthropic) {
+      url = '${config.baseUrl}/v1/messages';
+      headers = {
+        'x-api-key': config.apiKey,
+        'anthropic-version': '2023-06-01',
+      };
+      body = {
+        'model': config.model,
+        // 思考型模型（如 glm-5.3-flash）的思考 token 也计入 max_tokens，
+        // 制谱 JSON 本身可达数千 token，给足余量
+        'max_tokens': 32768,
+        'temperature': 0.1,
+        'system': system,
+        'messages': [
+          {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': user},
+              for (final b64 in imageJpegBase64)
+                {
+                  'type': 'image',
+                  'source': {
+                    'type': 'base64',
+                    'media_type': 'image/jpeg',
+                    'data': b64,
+                  },
+                },
+            ],
+          },
+        ],
+      };
+    } else {
+      url = '${config.baseUrl}/chat/completions';
+      headers = {'Authorization': 'Bearer ${config.apiKey}'};
+      final content = <Map<String, dynamic>>[
+        {'type': 'text', 'text': user},
+        for (final b64 in imageJpegBase64)
+          {
+            'type': 'image_url',
+            'image_url': {'url': 'data:image/jpeg;base64,$b64'},
+          },
+      ];
+      body = {
+        'model': config.model,
+        'temperature': 0.1,
+        'response_format': {'type': 'json_object'},
+        'messages': [
+          {'role': 'system', 'content': system},
+          {'role': 'user', 'content': content},
+        ],
+      };
+    }
 
     const maxAttempts = 4;
     Object? lastError;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        final resp = await _dio.post<String>(
-          '${config.baseUrl}/chat/completions',
-          options: Options(headers: {
-            'Authorization': 'Bearer ${config.apiKey}',
-          }),
-          data: body,
-        );
+        final resp =
+            await _dio.post<String>(url, options: Options(headers: headers), data: body);
         final data = jsonDecode(resp.data ?? '') as Map<String, dynamic>;
-        return extractContent(data);
+        return anthropic ? extractAnthropicText(data) : extractContent(data);
       } on DioException catch (e) {
         lastError = e;
         final status = e.response?.statusCode ?? 0;
@@ -115,6 +151,30 @@ class DioLlmClient implements LlmGateway {
       return sb.toString();
     }
     throw const FormatException('响应 content 类型异常');
+  }
+
+  /// 解析 Anthropic Messages 响应：拼接 content 中 type=text 的块。
+  /// 思考型模型的 thinking 块跳过。
+  static String extractAnthropicText(Map<String, dynamic> data) {
+    if (data['type'] == 'error') {
+      final err = data['error'];
+      if (err is Map) {
+        throw FormatException(
+            'API 错误 ${err['type'] ?? ''}：${err['message'] ?? '未知错误'}');
+      }
+      throw const FormatException('响应缺少 content');
+    }
+    final content = data['content'] as List?;
+    if (content == null) throw const FormatException('响应缺少 content');
+    final sb = StringBuffer();
+    for (final block in content) {
+      if (block is Map && block['type'] == 'text' && block['text'] is String) {
+        sb.write(block['text']);
+      }
+    }
+    final out = sb.toString();
+    if (out.isEmpty) throw const FormatException('响应未包含文本输出');
+    return out;
   }
 
   /// 从模型输出中提取 JSON（剥 markdown 围栏、前后杂质）。

@@ -166,4 +166,84 @@ void main() {
         '{"a": {"b": 2}}');
     expect(() => DioLlmClient.extractJson('没有 json'), throwsFormatException);
   });
+
+  test('Anthropic 协议：base URL 含 /anthropic 走 v1/messages', () async {
+    final adapter = ScriptedAdapter([
+      ResponseBody.fromString(
+        jsonEncode({
+          'id': 'msg_1',
+          'type': 'message',
+          'content': [
+            {'type': 'thinking', 'thinking': 'let me think...'},
+            {'type': 'text', 'text': '{"ok":1}'},
+          ],
+          'stop_reason': 'end_turn',
+        }),
+        200,
+        headers: {
+          Headers.contentTypeHeader: [Headers.jsonContentType],
+        },
+      ),
+    ]);
+    final dio = Dio()..httpClientAdapter = adapter;
+    final client = DioLlmClient(
+      dio: dio,
+      loadConfig: () => const LlmConfig(
+        baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+        model: 'glm-5.3-flash',
+        apiKey: 'sk-zp',
+      ),
+    );
+
+    final out = await client.completeJson(
+      system: 'sys',
+      user: 'usr',
+      imageJpegBase64: ['QUJD'],
+    );
+
+    expect(out, '{"ok":1}');
+    final req = adapter.requests.single;
+    expect(req['url'], 'https://open.bigmodel.cn/api/anthropic/v1/messages');
+    expect(req['headers']['x-api-key'], 'sk-zp');
+    expect(req['headers']['anthropic-version'], '2023-06-01');
+    final body = req['body'] as Map<String, dynamic>;
+    expect(body['model'], 'glm-5.3-flash');
+    expect(body['max_tokens'], greaterThanOrEqualTo(16384));
+    expect(body['system'], 'sys');
+    final messages = body['messages'] as List;
+    expect(messages.single['role'], 'user');
+    final content = messages.single['content'] as List;
+    expect(content[0]['type'], 'text');
+    expect(content[1]['type'], 'image');
+    final source = content[1]['source'] as Map;
+    expect(source['type'], 'base64');
+    expect(source['media_type'], 'image/jpeg');
+    expect(source['data'], 'QUJD');
+  });
+
+  test('extractAnthropicText 跳过 thinking 块只拼 text', () {
+    final data = {
+      'content': [
+        {'type': 'thinking', 'thinking': '分析图片...'},
+        {'type': 'text', 'text': '{"a":'},
+        {'type': 'text', 'text': '1}'},
+      ]
+    };
+    expect(DioLlmClient.extractAnthropicText(data), '{"a":1}');
+  });
+
+  test('extractAnthropicText 透出错误包', () {
+    final data = {
+      'type': 'error',
+      'error': {'type': 'insufficient_balance', 'message': '余额不足'},
+    };
+    expect(
+      () => DioLlmClient.extractAnthropicText(data),
+      throwsA(isA<FormatException>().having(
+        (e) => e.message,
+        'message',
+        'API 错误 insufficient_balance：余额不足',
+      )),
+    );
+  });
 }
