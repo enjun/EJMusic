@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../../../data/llm/image_preprocess.dart';
 import '../../../data/llm/llm_client.dart';
 import '../../../data/llm/prompts.dart';
@@ -152,7 +154,10 @@ class GenerationPipeline {
 
     for (var attempt = 1; attempt <= maxRepairAttempts; attempt++) {
       onAttempt?.call(attempt);
+      final sw = Stopwatch()..start();
       try {
+        debugPrint('[制谱] 第${page.pageIndex}页 第$attempt/$maxRepairAttempts次识别开始'
+            '${lastError == null ? '' : '（回喂：${_clip(lastError)}）'}');
         final raw = await gateway.completeJson(
           system: Prompts.system(kind),
           user: Prompts.user(
@@ -164,6 +169,8 @@ class GenerationPipeline {
           ),
           imageJpegBase64: await _imageBase64(page.imagePath),
         );
+        debugPrint('[制谱] 第${page.pageIndex}页 第$attempt次请求返回 '
+            '${sw.elapsedMilliseconds ~/ 1000}s，输出 ${raw.length} 字符');
         lastJson = DioLlmClient.extractJson(raw);
         final fragment = PageFragment.fromJson(
             jsonDecode(lastJson) as Map<String, dynamic>);
@@ -178,10 +185,13 @@ class GenerationPipeline {
           lastError = [
             for (final e in validation.errors) '${e.code}: ${e.message}',
           ].join('；');
+          debugPrint('[制谱] 第${page.pageIndex}页 第$attempt次校验未过：${_clip(lastError, 500)}');
           continue;
         }
         // 校验器的就地修复（补休止/tab 推导）要写回 fragment
         fragment.measures = probeDoc.parts.first.measures;
+        debugPrint('[制谱] 第${page.pageIndex}页 第$attempt次识别成功，'
+            '${fragment.measures.length} 小节，耗时 ${sw.elapsedMilliseconds ~/ 1000}s');
         return PageOutcome(
           pageIndex: page.pageIndex,
           ok: true,
@@ -190,6 +200,7 @@ class GenerationPipeline {
         );
       } catch (e) {
         lastError = e.toString();
+        debugPrint('[制谱] 第${page.pageIndex}页 第$attempt次异常（${sw.elapsedMilliseconds ~/ 1000}s）：${_clip(lastError, 500)}');
       }
     }
     return PageOutcome(
@@ -236,4 +247,7 @@ class GenerationPipeline {
       for (final m in last) m.toJson(),
     ]);
   }
+
+  static String _clip(String s, [int max = 120]) =>
+      s.length <= max ? s : '${s.substring(0, max)}…';
 }
