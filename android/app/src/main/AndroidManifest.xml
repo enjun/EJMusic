@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- LLM 制谱调用大模型 API 需要网络 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="ejmusic"
+        android:label="EJMusic"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
