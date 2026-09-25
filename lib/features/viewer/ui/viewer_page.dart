@@ -49,7 +49,9 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
       if (!mounted) return;
       setState(() => _volumes = vols);
     } catch (e) {
-      if (mounted) setState(() => _error = '$e');
+      if (mounted) {
+        setState(() => _error = e.toString().replaceFirst(RegExp(r'^Exception:\s*'), ''));
+      }
     }
   }
 
@@ -111,7 +113,7 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
       body: _error != null
           ? Center(child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Text('渲染失败：$_error', textAlign: TextAlign.center),
+              child: Text(_error!, textAlign: TextAlign.center),
             ))
           : volumes == null
               ? const Center(child: CircularProgressIndicator())
@@ -201,7 +203,7 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
       case SheetReady(:final totalSteps):
         setState(() => _totalSteps = totalSteps);
       case SheetError(:final message):
-        setState(() => _error = message);
+        setState(() => _error = '渲染失败：$message');
       default:
         break;
     }
