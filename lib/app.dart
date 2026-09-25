@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'core/config/app_settings.dart';
 import 'features/convert/ui/convert_page.dart';
 import 'features/generation/ui/generation_page.dart';
 import 'features/import/ui/import_page.dart';
@@ -78,8 +80,20 @@ final appRouter = GoRouter(
   ],
 );
 
-class EJMusicApp extends StatelessWidget {
+class EJMusicApp extends ConsumerStatefulWidget {
   const EJMusicApp({super.key});
+
+  @override
+  ConsumerState<EJMusicApp> createState() => _EJMusicAppState();
+}
+
+class _EJMusicAppState extends ConsumerState<EJMusicApp> {
+  @override
+  void initState() {
+    super.initState();
+    // 启动即触发配置加载，否则识别开始时读到 AsyncLoading 会回退成空配置
+    ref.read(llmConfigProvider);
+  }
 
   @override
   Widget build(BuildContext context) {
