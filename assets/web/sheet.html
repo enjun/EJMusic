@@ -223,13 +223,21 @@
 
   function cursorTo(step, scroll) {
     if (!osmd || !osmd.cursor) return;
+    // followCursor:true 时 reset/next 内部会把页面滚到光标处——每次点击
+    // 都让谱面跳走，用户看到的高亮位置和点击时对不上。走光标全程锁滚动，
+    // 走完恢复，再按调用方需要决定是否滚动定位。
+    var sx = window.scrollX, sy = window.scrollY;
     osmd.cursor.reset();
     var i = 0;
     while (i < step && i < MAX_STEPS && !osmd.cursor.iterator.endReached) {
       osmd.cursor.next();
       i++;
     }
-    if (!scroll) return;
+    window.scrollTo(sx, sy);
+    if (!scroll) {
+      cursorClickThrough();
+      return;
+    }
     // osmd-extended 的 followCursor 未必在 next() 里触发滚动，兜底手动滚
     try {
       var el = osmd.cursor.cursorElement;
