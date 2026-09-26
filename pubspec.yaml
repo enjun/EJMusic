@@ -51,6 +51,18 @@ dependencies:
   flutter_soloud: ^5.1.2
   ffi: ^2.1.0
 
+# Windows 插件本地修复版：0.7.0-beta.3 的 InAppWebView::setSurfaceSize 在
+# Bounds 已是物理像素（BoundsMode=USE_RAW_PIXELS）的前提下又调
+# put_RasterizationScale(dpr)，WebView2 再放大一次光栅化 → 内容被双重
+# 缩放 dpr²（125% 屏实测 1.5625）。页面显示与命中测试映射不一致，
+# 用户点击谱面时高亮总是落在别的音符上。本地把 setSurfaceSize 的
+# RasterizationScale 固定为 1.0：内容按 raw 1:1 渲染，显示与命中在
+# 任何坐标语义下都一致（代价：125% 屏上页面以 dpr=1 布局，字号略小）。
+# 上游修复后可删除本 override。
+dependency_overrides:
+  flutter_inappwebview_windows:
+    path: third_party/flutter_inappwebview_windows
+
 # 只播 WAV 采样，无需 Opus/Ogg：跳过 Xiph 预编译库的 GitHub 下载（本机网络不通）
 hooks:
   user_defines:

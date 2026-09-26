@@ -8,10 +8,11 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
-/// 24 小节 4/4，每小节 4 个四分音符 C5，足够高以产生纵向滚动。
+/// 48 小节 4/4，每小节 4 个四分音符 C5，足够高以产生纵向滚动
+/// （webview 视口按 raw 像素布局时约 800×600，24 小节可能不满一屏）。
 String buildScoreXml() {
   final sb = StringBuffer();
-  for (var m = 1; m <= 24; m++) {
+  for (var m = 1; m <= 48; m++) {
     sb.write('<measure number="$m">');
     if (m == 1) {
       sb.write('<attributes><divisions>1</divisions>'
@@ -104,7 +105,7 @@ void main() {
     }
     expect(first, isA<SheetReady>(), reason: '渲染应成功');
     final total = (first as SheetReady).totalSteps;
-    expect(total, 96, reason: '24 小节 × 每小节 4 拍 = 96 步，实得 $total');
+    expect(total, 192, reason: '48 小节 × 每小节 4 拍 = 192 步，实得 $total');
 
     final w = webview!;
     // 谱面总高必须超过视口，否则谈不上滚动

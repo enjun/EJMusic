@@ -54,5 +54,8 @@ lib/generated_plugin_registrant.dart
 windows/flutter/ephemeral/
 
 # Scratch npm workspace only used to vendor the osmd bundle into assets/
-third_party/
+third_party/*
+# 本地修复版 flutter_inappwebview_windows（DPI 双重缩放修复，见 pubspec.yaml dependency_overrides）
+!third_party/flutter_inappwebview_windows
+!third_party/flutter_inappwebview_windows/**
 /android/build/
