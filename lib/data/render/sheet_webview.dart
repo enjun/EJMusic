@@ -41,6 +41,8 @@ sealed class SheetEvent {
           measure: (m['m'] as num).toInt(),
           staff: (m['s'] as num).toInt(),
           eventIndex: (m['k'] as num).toInt(),
+          quarter: m['q'] is num ? (m['q'] as num).toDouble() : null,
+          entryIdx: m['gi'] is num ? (m['gi'] as num).toInt() : null,
         );
       case 'error':
         return SheetError(m['message']?.toString() ?? '未知渲染错误');
@@ -77,11 +79,19 @@ class SheetNoteClicked extends SheetEvent {
     required this.measure,
     required this.staff,
     required this.eventIndex,
+    this.quarter,
+    this.entryIdx,
   });
 
   final int measure;
   final int staff;
   final int eventIndex;
+
+  /// 所点事件的 onset（四分音符单位）；旧版宿主页不带此字段时为 null。
+  final double? quarter;
+
+  /// 所点事件在宿主页图形事件序表中的全局下标（光标精确校正用）。
+  final int? entryIdx;
 }
 
 class SheetError extends SheetEvent {
@@ -128,8 +138,11 @@ class SheetWebviewController {
       _call({'op': 'load', 'xml': xml, 'zoom': ?zoom});
   Future<void> cursorTo(int step) async =>
       _call({'op': 'cursorTo', 'step': step});
-  Future<void> selectStep(int step) async =>
-      _call({'op': 'select', 'step': step});
+  Future<void> selectStep(int step, {int? entryIdx}) async => _call({
+        'op': 'select',
+        'step': step,
+        'idx': ?entryIdx,
+      });
   Future<void> cursorReset() async => _call({'op': 'cursorReset'});
   Future<void> setZoom(double zoom) async =>
       _call({'op': 'setZoom', 'zoom': zoom});

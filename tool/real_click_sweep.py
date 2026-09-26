@@ -57,11 +57,39 @@ def targets(c):
 """))
 
 
+def cursor_pos(c):
+    return json.loads(c.evaluate("""
+(function(){
+  var el = document.getElementById('cursorImg-0');
+  if (!el) return JSON.stringify(null);
+  var r = el.getBoundingClientRect();
+  return JSON.stringify({x: r.left + window.scrollX + r.width/2,
+                         y: r.top + window.scrollY + r.height/2});
+})()
+"""))
+
+
 def main():
     c, _ = find_sheet()
     if c is None:
         print("FAIL: CDP 连不上")
         return 1
+    # 安装点击记录器（真实点击的 DOM 侧回执）
+    c.evaluate("""
+(function(){
+  window.__ejmClickLog = [];
+  document.addEventListener('click', function(ev){
+    var t = ev.target, idx;
+    while (t && t !== document.body) {
+      if (t.__ejmEi !== undefined) { idx = t.__ejmEi; break; }
+      t = t.parentElement;
+    }
+    window.__ejmClickLog.push({x: ev.clientX, y: ev.clientY,
+                               hit: idx === undefined ? null : idx,
+                               t: Date.now()});
+  }, true);
+})()
+""")
     n = c.evaluate("document.querySelectorAll(\"[class*='vf-notehead']\").length")
     print("符头数:", n)
     c.evaluate("window.scrollTo(0,0)")
@@ -118,17 +146,25 @@ def main():
                 break
         time.sleep(0.4)
         sel = selection(c)
-        ok = got is not None and sel["idx"] == t["idx"]
+        cur = cursor_pos(c)
+        # 绿色光标必须落在所点事件上（x 偏差 <60px；光标若还停在
+        # 小节第一个步位，中后段音符处偏差通常 >100px）
+        curDx = abs(cur["x"] - t["dx"]) if cur else None
+        ok = (got is not None and sel["idx"] == t["idx"]
+              and curDx is not None and curDx < 60)
         status = "OK" if ok else "BAD"
+        curX = f"{cur['x']:.0f}" if cur else "?"
+        dev = f"{curDx:.0f}" if curDx is not None else "?"
         print(f"  [{status}] idx={t['idx']} css=({vx:.0f},{vy:.0f}) "
               f"物理=({px},{py}) 收到css="
               f"({got['x'] if got else '?'},{got['y'] if got else '?'}) "
-              f"选中={sel['idx']}(n={sel['n']})")
+              f"选中={sel['idx']}(n={sel['n']}) "
+              f"光标x={curX} 目标x={t['dx']:.0f} 偏差={dev}")
         if not ok:
             bad.append(t)
     print(f"完成：{len(picked)} 个真实点击，错误 {len(bad)}")
     if not bad:
-        print("PASS: 真实点击全部高亮正确")
+        print("PASS: 真实点击选中与光标全部正确")
         return 0
     print("FAIL")
     return 1

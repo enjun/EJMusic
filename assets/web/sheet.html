@@ -110,9 +110,16 @@
           var idx = out.length;
           group.__ejmEi = idx;
           for (var e2 = 0; e2 < els.length; e2++) els[e2].__ejmEi = idx;
+          // 事件 onset（四分音符单位）：光标按"小节+onset"精确定位到
+          // 所点事件对应的步位，而不是只到小节开头
+          var q = -1;
+          try {
+            var ts = ses[ei].getAbsoluteTimestamp();
+            if (ts) q = ts.realValue * 4;
+          } catch (err2) {}
           out.push({
             pts: pts, els: els, group: group,
-            m: mi, s: si, k: ei
+            m: mi, s: si, k: ei, q: q
           });
         }
       }
@@ -181,9 +188,11 @@
     // 测试/诊断面包屑：最近一次命中的事件身份
     window.__ejmLastClick = {
       m: g.m, s: g.s, k: g.k,
+      gi: g.els.length ? g.els[0].__ejmEi : undefined,
       dist: direct ? 0 : Math.round(Math.sqrt(bestD))
     };
-    post({ event: 'noteClicked', m: g.m, s: g.s, k: g.k });
+    post({ event: 'noteClicked', m: g.m, s: g.s, k: g.k, q: g.q,
+           gi: window.__ejmLastClick.gi });
   }
 
   function ensureOsmd() {
@@ -273,6 +282,26 @@
             break;
           case 'select':
             cursorTo(cmd.step, false);
+            // 光标按步号走可能与所点事件有偏差（iterator 的
+            // currentMeasureIndex 在小节边界滞后等），按所点事件的
+            // 实际位置做 delta 校正，保证绿光标可见地落在被点音符上
+            if (typeof cmd.idx === 'number' && osmd.cursor
+                && osmd.cursor.cursorElement) {
+              try {
+                var gSel = collectEntries()[cmd.idx];
+                if (gSel && gSel.els && gSel.els.length) {
+                  var rSel = gSel.els[0].getBoundingClientRect();
+                  var cEl = osmd.cursor.cursorElement;
+                  var cRect = cEl.getBoundingClientRect();
+                  var dxSel = (rSel.left + rSel.width / 2)
+                    - (cRect.left + cRect.width / 2);
+                  var dySel = (rSel.top + rSel.height / 2)
+                    - (cRect.top + cRect.height / 2);
+                  cEl.style.left = (cEl.offsetLeft + dxSel) + 'px';
+                  cEl.style.top = (cEl.offsetTop + dySel) + 'px';
+                }
+              } catch (eSel) {}
+            }
             break;
           case 'cursorReset':
             if (osmd) {

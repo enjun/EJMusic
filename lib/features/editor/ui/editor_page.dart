@@ -49,6 +49,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
 
   /// cursor 步号 → 小节下标（ready 后由渲染桥给出，选中高亮用）。
   Map<int, int> _stepMeasure = {};
+
+  /// cursor 步号 → onset（四分音符单位），点击高亮精确定位用。
+  Map<int, double> _stepQuarters = {};
   ScoreEvent? _selected;
   Timer? _renderDebounce;
 
@@ -132,6 +135,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         _error = null;
         _selected = null;
         _stepMeasure = {};
+        _stepQuarters = {};
       });
       unawaited(_renderDoc());
     } catch (e) {
@@ -176,7 +180,10 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   }
 
   void _onReady(SheetReady ready) {
-    setState(() => _stepMeasure = ready.stepMeasures);
+    setState(() {
+      _stepMeasure = ready.stepMeasures;
+      _stepQuarters = ready.stepQuarters;
+    });
     EditorPage.debugTotalSteps = ready.totalSteps;
     EditorPage.debugMappedSteps = ready.stepMeasures.length;
   }
@@ -215,15 +222,31 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       'k=${click.eventIndex} → ${eventLabel(event)}',
     );
     setState(() => _selected = event);
-    // 高亮：定位到该小节的第一个 cursor 步
-    int? step;
+    // 光标定位到所点事件的精确 step（按小节+onset 匹配；onset 缺失或
+    // 匹配不上时退回该小节第一个步位）。只按小节定位会让高亮落在
+    // 小节第一个音符上，用户看来就是"点谁高亮都不对"。
+    final step = _stepFor(click);
+    if (step != null) {
+      unawaited(_sheet.selectStep(step, entryIdx: click.entryIdx));
+    }
+  }
+
+  /// 所点事件对应的 cursor 步号：优先小节+onset 精确匹配，
+  /// 否则退回该小节第一个步位；无映射时返回 null（光标不动）。
+  int? _stepFor(SheetNoteClicked click) {
+    final q = click.quarter;
+    int? firstOfMeasure;
     for (final s in _stepMeasure.keys.toList()..sort()) {
-      if (_stepMeasure[s] == click.measure) {
-        step = s;
-        break;
+      if (_stepMeasure[s] != click.measure) continue;
+      firstOfMeasure ??= s;
+      if (q != null) {
+        final sq = _stepQuarters[s];
+        if (sq != null && (sq - q).abs() < 1e-6) {
+          return s;
+        }
       }
     }
-    if (step != null) unawaited(_sheet.selectStep(step));
+    return firstOfMeasure;
   }
 
   void _onSheetEvent(SheetEvent event) {
