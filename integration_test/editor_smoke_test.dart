@@ -102,6 +102,27 @@ void main() {
     await tester.pumpAndSettle(const Duration(seconds: 2));
     expect(find.textContaining('已选中：C4 1/2'), findsOneWidget);
 
+    // Shift+琴键：加音成和弦。Shift+K = C5 追加到 C4 → C4+C5
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(find.textContaining('已选中：C4+C5 1/2'), findsOneWidget);
+
+    // 重复同音去重：仍为两音
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已选中：C4+C5 1/2'), findsOneWidget);
+
+    // Shift+E = D#4 → 三音和弦
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyE);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(find.textContaining('已选中：C4+C5+D#4 1/2'), findsOneWidget);
+
     // Z 降八度 → 状态条显示八度3
     await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
     await tester.pump();

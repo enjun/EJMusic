@@ -354,6 +354,57 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     _insertEventAt(e, feedback: false);
   }
 
+  /// Shift+琴键：向选中事件追加音高成和弦（MuseScore 惯例）；
+  /// 选中休止符则就地转成同时值音符；无选中只提示。
+  void _addToChord((String, int, int) spec) {
+    final sel = _selected;
+    final loc = sel == null ? null : _locate(sel);
+    if (loc == null) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('先选中一个音符，再用 Shift+琴键 加音成和弦'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      return;
+    }
+    final octave = _inputOctave + spec.$3;
+    if (octave < 0 || octave > 8) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('超出音域（八度 0-8），请用 Z/X 调整八度'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      return;
+    }
+    final e = loc.$1.events[loc.$2];
+    if (e.isRest) {
+      e.type = 'note';
+      e.pitches = [ScorePitch(step: spec.$1, alter: spec.$2, octave: octave)];
+    } else {
+      final dup = e.pitches.any(
+        (p) => p.step == spec.$1 && p.alter == spec.$2 && p.octave == octave,
+      );
+      if (dup) return;
+      e.pitches = [
+        ...e.pitches,
+        ScorePitch(step: spec.$1, alter: spec.$2, octave: octave),
+      ];
+    }
+    debugPrint(
+      'EJM editor: 加音成和弦 m=${loc.$3} staff=${loc.$1.staff} '
+      'index=${loc.$2} → ${eventLabel(e)}',
+    );
+    setState(() {}); // 选中项就地变化，状态条立即刷新
+    _afterChange();
+    _revealMeasure(loc.$3, null);
+  }
+
   /// 在选中事件之后插入 [e]（无选中则追加到末尾），并滚动定位让用户看见。
   void _insertEventAt(ScoreEvent e, {bool feedback = true}) {
     final doc = _doc;
@@ -549,10 +600,14 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       _insertEvent(false);
       return KeyEventResult.handled;
     }
-    // 字母键：钢琴琴键输入
+    // 字母键：钢琴琴键输入；Shift+琴键 = 向选中事件加音成和弦
     final spec = _pianoKeys[key];
     if (spec != null) {
-      _insertPianoNote(spec);
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        _addToChord(spec);
+      } else {
+        _insertPianoNote(spec);
+      }
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -664,8 +719,8 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
       child: Text(
-        '键盘输入：A–L=白键 C–D₅，W/E/T/Y/U/O/P=黑键，Z/X=八度∓，'
-        '1–6=时值，.=附点，0=休止，←/→=选音符，Insert=插入',
+        '键盘输入：A–L=白键 C–D₅，W/E/T/Y/U/O/P=黑键，Shift+琴键=加音成和弦，'
+        'Z/X=八度∓，1–6=时值，.=附点，0=休止，←/→=选音符，Insert=插入',
         style: TextStyle(fontSize: 11, color: Theme.of(context).hintColor),
         overflow: TextOverflow.ellipsis,
       ),
