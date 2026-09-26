@@ -85,11 +85,13 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   Future<void> _renderDoc() async {
     final doc = _doc;
     if (doc == null) return;
+    final sw = Stopwatch()..start();
     try {
       await _sheet.setZoom(_zoom);
       await _sheet.loadMusicXml(scoreToMusicXml(doc));
-    } catch (_) {
-      // 渲染错误经 SheetError 事件上报
+      debugPrint('EJM editor: 渲染完成 ${sw.elapsedMilliseconds}ms');
+    } catch (e) {
+      debugPrint('EJM editor: 渲染异常 $e');
     }
   }
 
@@ -117,7 +119,10 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     final doc = _doc;
     if (doc == null) return;
     final measures = doc.parts.first.measures;
-    if (click.measure < 0 || click.measure >= measures.length) return;
+    if (click.measure < 0 || click.measure >= measures.length) {
+      debugPrint('EJM editor: 点击小节越界 m=${click.measure}');
+      return;
+    }
     final measure = measures[click.measure];
     ScoreVoice? voice;
     for (final v in measure.voices) {
@@ -126,8 +131,20 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         break;
       }
     }
-    if (voice == null || click.eventIndex >= voice.events.length) return;
+    if (voice == null) {
+      debugPrint('EJM editor: 点击无对应声部 m=${click.measure} s=${click.staff}');
+      return;
+    }
+    if (click.eventIndex >= voice.events.length) {
+      debugPrint(
+          'EJM editor: 点击事件越界 m=${click.measure} s=${click.staff} '
+          'k=${click.eventIndex} 共${voice.events.length}个事件');
+      return;
+    }
     final event = voice.events[click.eventIndex];
+    debugPrint(
+        'EJM editor: 选中 m=${click.measure} s=${click.staff} '
+        'k=${click.eventIndex} → ${eventLabel(event)}');
     setState(() => _selected = event);
     // 高亮：定位到该小节的第一个 cursor 步
     int? step;
@@ -146,10 +163,24 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       case SheetReady():
         _onReady(event);
       case SheetNoteClicked():
+        debugPrint(
+            'EJM editor: noteClicked m=${event.measure} s=${event.staff} '
+            'k=${event.eventIndex}');
         EditorPage.debugSelectedStep = event.eventIndex;
         _onNoteClicked(event);
       case SheetError(:final message):
-        setState(() => _error = '渲染失败：$message');
+        debugPrint('EJM editor: SheetError $message');
+        // 已有文档在编辑时不要吞掉整页，只提示
+        if (_doc != null) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(
+              content: Text('渲染失败：$message'),
+              duration: const Duration(seconds: 3),
+            ));
+        } else {
+          setState(() => _error = '渲染失败：$message');
+        }
       default:
         break;
     }
@@ -200,13 +231,15 @@ class _EditorPageState extends ConsumerState<EditorPage> {
 
   // ---- 谱面选中操作 ----
 
-  (ScoreVoice, int)? _locate(ScoreEvent e) {
+  /// 在文档中定位事件 → (声部, 声部内下标, 小节下标)。
+  (ScoreVoice, int, int)? _locate(ScoreEvent e) {
     final doc = _doc;
     if (doc == null) return null;
-    for (final m in doc.parts.first.measures) {
-      for (final v in m.voices) {
+    final measures = doc.parts.first.measures;
+    for (var mi = 0; mi < measures.length; mi++) {
+      for (final v in measures[mi].voices) {
         final i = v.events.indexOf(e);
-        if (i >= 0) return (v, i);
+        if (i >= 0) return (v, i, mi);
       }
     }
     return null;
@@ -222,13 +255,43 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     );
     final sel = _selected;
     final loc = sel == null ? null : _locate(sel);
+    final int measureIndex;
     if (loc != null) {
       loc.$1.events.insert(loc.$2 + 1, e);
+      measureIndex = loc.$3;
+      debugPrint(
+          'EJM editor: 插入${note ? "音符" : "休止"}于 m=$measureIndex '
+          'staff=${loc.$1.staff} index=${loc.$2 + 1}');
     } else {
-      doc.parts.first.measures.last.voices.last.events.add(e);
+      final measures = doc.parts.first.measures;
+      measures.last.voices.last.events.add(e);
+      measureIndex = measures.length - 1;
+      debugPrint('EJM editor: 无选中，${note ? "音符" : "休止"}追加到末尾 m=$measureIndex');
     }
     setState(() => _selected = e);
     _afterChange();
+    // 必须让用户看见插入结果：滚动到该小节 + 提示位置
+    _revealMeasure(
+        measureIndex, '已在第 ${measureIndex + 1} 小节插入${note ? "音符" : "休止"}');
+  }
+
+  /// 滚动谱面到指定小节（0 基）并提示。
+  void _revealMeasure(int measureIndex, String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 2),
+      ));
+    int? step;
+    for (final s in _stepMeasure.keys.toList()..sort()) {
+      if (_stepMeasure[s] == measureIndex) {
+        step = s;
+        break;
+      }
+    }
+    if (step != null) unawaited(_sheet.cursorTo(step));
   }
 
   void _deleteSelected() {
@@ -237,6 +300,8 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     final loc = _locate(sel);
     if (loc == null) return;
     loc.$1.events.removeAt(loc.$2);
+    debugPrint(
+        'EJM editor: 删除 m=${loc.$3} staff=${loc.$1.staff} index=${loc.$2}');
     setState(() => _selected = null);
     _afterChange();
   }
@@ -341,7 +406,10 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   // ---- 谱面工具条 ----
 
   Widget _buildToolbar() {
-    return Row(
+    // Wrap 而不是 Row+Spacer：窄窗口下按钮换行而不是被裁出屏幕外
+    return Wrap(
+      spacing: 8,
+      runSpacing: 4,
       children: [
         IconButton(
           tooltip: '缩小',
@@ -354,25 +422,21 @@ class _EditorPageState extends ConsumerState<EditorPage> {
           icon: const Icon(Icons.zoom_in),
           onPressed: () => _adjustZoom(0.1),
         ),
-        const Spacer(),
         OutlinedButton.icon(
           onPressed: () => _insertEvent(true),
           icon: const Icon(Icons.note_add, size: 18),
           label: const Text('插入音符', style: TextStyle(fontSize: 12)),
         ),
-        const SizedBox(width: 8),
         OutlinedButton.icon(
           onPressed: () => _insertEvent(false),
           icon: const Icon(Icons.playlist_add, size: 18),
           label: const Text('插入休止', style: TextStyle(fontSize: 12)),
         ),
-        const SizedBox(width: 8),
         OutlinedButton.icon(
           onPressed: _selected == null ? null : _deleteSelected,
           icon: const Icon(Icons.delete_outline, size: 18),
           label: const Text('删除', style: TextStyle(fontSize: 12)),
         ),
-        const SizedBox(width: 8),
       ],
     );
   }

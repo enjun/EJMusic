@@ -119,14 +119,19 @@
 
   async function loadMusicXml(xml) {
     ensureOsmd();
+    // followCursor 会在建 steps map 走光标时把页面滚到谱面末尾，
+    // osmd.cursor.reset() 又不会滚回来——全程锁住滚动位置
+    var scrollY = window.scrollY;
     try {
       await osmd.load(xml);
       osmd.zoom = zoom;
       osmd.render();
       osmd.cursor.show();
       var map = buildStepsMap();
+      window.scrollTo(0, scrollY);
       post({ event: 'ready', totalSteps: map.total, stepsMap: map.steps });
     } catch (e) {
+      window.scrollTo(0, scrollY);
       post({ event: 'error', message: String(e && e.message || e) });
     }
   }
@@ -171,9 +176,11 @@
           case 'setZoom':
             zoom = cmd.zoom;
             if (osmd) {
+              var sy = window.scrollY;
               osmd.zoom = zoom;
               osmd.render();
               osmd.cursor.show();
+              window.scrollTo(0, sy);
             }
             break;
           default:

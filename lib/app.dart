@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -14,7 +16,8 @@ import 'features/settings/ui/settings_page.dart';
 import 'features/viewer/ui/viewer_page.dart';
 
 final appRouter = GoRouter(
-  initialLocation: '/',
+  // 调试用：设 EJMUSIC_DEBUG_LOCATION 可让 App 启动直达指定页面
+  initialLocation: Platform.environment['EJMUSIC_DEBUG_LOCATION'] ?? '/',
   routes: [
     GoRoute(
       path: '/',
