@@ -57,6 +57,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   Rational _inputDur = const Rational(1, 1);
   int _inputDots = 0;
 
+  /// 曲谱信息卡默认收起：谱面区是编辑主战场，低音谱表需要全部高度。
+  bool _metaExpanded = false;
+
   /// 键盘 1-6 对应的时值（全音符→三十二分音符）。
   static const List<(String, Rational)> _durPresets = [
     ('全音符', Rational(4, 1)),
@@ -632,19 +635,22 @@ class _EditorPageState extends ConsumerState<EditorPage> {
                   children: [
                     _buildToolbar(),
                     _buildKeyboardHint(),
-                    Expanded(flex: 5, child: _buildWebView()),
+                    Expanded(child: _buildWebView()),
                     const Divider(height: 1),
                     _buildSelectionBar(),
-                    Expanded(
-                      flex: 4,
-                      child: ListView(
-                        padding: const EdgeInsets.all(12),
-                        children: [
-                          _buildMetaCard(doc),
-                          const SizedBox(height: 24),
-                        ],
-                      ),
-                    ),
+                    if (_metaExpanded)
+                      Expanded(
+                        flex: 2,
+                        child: ListView(
+                          padding: const EdgeInsets.all(12),
+                          children: [
+                            _buildMetaCard(doc),
+                            const SizedBox(height: 24),
+                          ],
+                        ),
+                      )
+                    else
+                      _buildMetaToggle(),
                   ],
                 ),
         ),
@@ -799,6 +805,21 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   }
 
   // ---- 元信息 ----
+
+  /// 收起状态的曲谱信息入口条（点击展开，谱面保持最大高度）。
+  Widget _buildMetaToggle() {
+    return SizedBox(
+      height: 40,
+      child: TextButton.icon(
+        onPressed: () => setState(() => _metaExpanded = true),
+        icon: const Icon(Icons.settings_outlined, size: 16),
+        label: const Text(
+          '曲谱信息（曲名 / 调号 / 拍号 / BPM）',
+          style: TextStyle(fontSize: 12),
+        ),
+      ),
+    );
+  }
 
   static String _keyLabel(int f) {
     if (f == 0) return 'C（无升降号）';

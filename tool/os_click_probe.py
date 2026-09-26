@@ -60,10 +60,20 @@ public class Clicker {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, IntPtr e);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  public struct RECT { public int Left, Top, Right, Bottom; }
 }
 '@
 [Clicker]::SetProcessDPIAware() | Out-Null
-[Clicker]::SetForegroundWindow([IntPtr]%MAINHWND%) | Out-Null
+# SetForegroundWindow 从后台进程调用会被前台锁拒绝——先真实点击标题栏
+# （非客户区，无副作用）把窗口带到前台
+$r = New-Object Clicker+RECT
+[Clicker]::GetWindowRect([IntPtr]%MAINHWND%, [ref]$r) | Out-Null
+$tx = [int](($r.Left + $r.Right) / 2); $ty = $r.Top + 12
+[Clicker]::SetCursorPos($tx, $ty) | Out-Null
+Start-Sleep -Milliseconds 150
+[Clicker]::mouse_event(2,0,0,0,[IntPtr]::Zero); Start-Sleep -Milliseconds 40
+[Clicker]::mouse_event(4,0,0,0,[IntPtr]::Zero)
 Start-Sleep -Milliseconds 600
 [Clicker]::SetCursorPos(%X%, %Y%) | Out-Null
 Start-Sleep -Milliseconds 200
@@ -80,7 +90,7 @@ Start-Sleep -Milliseconds 400
 [Clicker]::keybd_event(0x41,0,0,[IntPtr]::Zero)
 Start-Sleep -Milliseconds 50
 [Clicker]::keybd_event(0x41,0,2,[IntPtr]::Zero)
-Write-Output "clicked %X%,%Y% + keys RIGHT,A"
+Write-Output "title-click then clicked %X%,%Y% + keys RIGHT,A"
 """
 
 

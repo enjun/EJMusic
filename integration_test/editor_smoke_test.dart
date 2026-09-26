@@ -24,9 +24,9 @@ void main() {
     await Future.delayed(const Duration(seconds: 5));
     await tester.pump();
 
-    // 谱面渲染 + 工具条
+    // 谱面渲染 + 工具条（曲谱信息卡默认收起为入口条）
     expect(find.byType(InAppWebView), findsOneWidget);
-    expect(find.text('曲谱信息'), findsOneWidget);
+    expect(find.textContaining('曲谱信息'), findsOneWidget);
     expect(find.text('插入音符'), findsOneWidget);
     expect(find.textContaining('点击上方谱面'), findsOneWidget);
 
