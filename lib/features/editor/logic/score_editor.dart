@@ -30,9 +30,7 @@ String pitchLabel(ScorePitch p) =>
 String eventLabel(ScoreEvent e) {
   final dur = '${e.dur.numerator}/${e.dur.denominator}';
   if (e.isRest) return '休止 $dur';
-  final pitches = e.pitches.isEmpty
-      ? '?'
-      : e.pitches.map(pitchLabel).join('+');
+  final pitches = e.pitches.isEmpty ? '?' : e.pitches.map(pitchLabel).join('+');
   final tie = e.tie == null ? '' : '~';
   return '$pitches$tie $dur';
 }
