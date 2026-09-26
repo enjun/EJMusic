@@ -92,6 +92,30 @@ class SongsDao extends DatabaseAccessor<AppDatabase> with _$SongsDaoMixin {
     );
   }
 
+  /// 手动编辑曲谱后刷新曲目元数据（不改状态）。
+  Future<void> updateScoreMeta({
+    required int songId,
+    String? title,
+    String? composer,
+    int? keyFifths,
+    int? timeBeats,
+    int? timeBeatType,
+    int? bpm,
+  }) {
+    return (update(songs)..where((s) => s.id.equals(songId))).write(
+      SongsCompanion(
+        title: title == null ? const Value.absent() : Value(title),
+        composer: composer == null ? const Value.absent() : Value(composer),
+        keyFifths: keyFifths == null ? const Value.absent() : Value(keyFifths),
+        timeBeats: timeBeats == null ? const Value.absent() : Value(timeBeats),
+        timeBeatType:
+            timeBeatType == null ? const Value.absent() : Value(timeBeatType),
+        bpm: bpm == null ? const Value.absent() : Value(bpm),
+        updatedAt: Value(DateTime.now()),
+      ),
+    );
+  }
+
   /// 去重候选：归一化曲名近似的所有曲目（含指纹汇总由调用方查页表）。
   Future<List<Song>> allSongsForDedupe() {
     return select(songs).get();

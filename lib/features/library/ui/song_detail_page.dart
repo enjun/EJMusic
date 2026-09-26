@@ -160,6 +160,20 @@ class SongDetailPage extends ConsumerWidget {
             ),
           ],
         ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.edit_outlined),
+                label: const Text('编辑曲谱'),
+                onPressed: hasScore
+                    ? () => context.push('/song/$songId/edit')
+                    : null,
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }
