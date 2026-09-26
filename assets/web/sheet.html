@@ -54,13 +54,16 @@
   // ---- 点击选中（编辑器用）----
   // 从 OSMD 图形模型收集每个 voice entry 的 DOM 位置与事件身份：
   // m=小节下标、s=谱表下标（0基）、k=该谱表该小节内第 k 个事件。
-  // 和弦是一个 voice entry：收集该 entry 的全部符头位置——低音谱和弦密集，
-  // 只记首个符头会导致点和弦下方的音时命中隔壁事件。
-  // 坐标缓存为文档坐标（页面坐标+滚动量），渲染/缩放后失效重建，
-  // 避免每次点击都对全部符头做 getBoundingClientRect。
+  // 关键：notes[n].getSVGGElement() 返回的是整个 stavenote 组
+  // （含符干/符尾/附点，包围盒中心偏离符头可达 25px，和弦全部音共用
+  // 同一个组）——直接用它会导致点符头命中错事件。所以取组内逐个
+  // vf-notehead 元素作为点击目标，并把事件身份（__ejmEi）盖到 DOM 上，
+  // 点击时从 ev.target 向上找：点谁就是谁；几何最近邻只做空白处兜底。
+  // 休止符没有符头，退回整组。坐标缓存为文档坐标，渲染/缩放后失效重建。
 
   var __entriesCache = null;
   var __selEls = null;
+  var container = document.getElementById('container');
 
   function invalidateEntries() {
     __entriesCache = null;
@@ -86,18 +89,29 @@
           if (!ves.length) continue;
           var notes = ves[0].notes || [];
           if (!notes.length) continue;
+          var group = null;
+          try { group = notes[0].getSVGGElement(); } catch (err) { group = null; }
+          if (!group || !group.getBoundingClientRect) continue;
           var pts = [], els = [];
-          for (var n = 0; n < notes.length; n++) {
-            var el = null;
-            try { el = notes[n].getSVGGElement(); } catch (err) { el = null; }
-            if (!el || !el.getBoundingClientRect) continue;
-            var r = el.getBoundingClientRect();
-            pts.push({ x: r.left + sx + r.width / 2, y: r.top + sy + r.height / 2 });
-            els.push(el);
+          var headEls = group.querySelectorAll
+            ? group.querySelectorAll('[class*="vf-notehead"]') : [];
+          for (var n = 0; n < headEls.length; n++) {
+            if (!headEls[n].getBoundingClientRect) continue;
+            var hr = headEls[n].getBoundingClientRect();
+            if (!hr.width && !hr.height) continue;
+            pts.push({ x: hr.left + sx + hr.width / 2, y: hr.top + sy + hr.height / 2 });
+            els.push(headEls[n]);
           }
-          if (!pts.length) continue;
+          if (!pts.length) {
+            var gr = group.getBoundingClientRect();
+            pts.push({ x: gr.left + sx + gr.width / 2, y: gr.top + sy + gr.height / 2 });
+            els.push(group);
+          }
+          var idx = out.length;
+          group.__ejmEi = idx;
+          for (var e2 = 0; e2 < els.length; e2++) els[e2].__ejmEi = idx;
           out.push({
-            pts: pts, els: els,
+            pts: pts, els: els, group: group,
             m: mi, s: si, k: ei
           });
         }
@@ -115,6 +129,15 @@
     for (var j = 0; j < g.els.length; j++) g.els[j].style.fill = '#1a73e8';
   }
 
+  // 光标是绝对定位的 img 覆盖层，会挡住其下音符的点击（target=光标，
+  // 盖章查找落空走几何兜底，密集处会选错）——设为点击穿透
+  function cursorClickThrough() {
+    try {
+      var el = osmd.cursor && osmd.cursor.cursorElement;
+      if (el && el.style) el.style.pointerEvents = 'none';
+    } catch (e) { /* 光标未创建时忽略 */ }
+  }
+
   function onSheetClick(ev) {
     if (!osmd) return;
     // 诊断面包屑：所有到达页面的点击原始坐标（含未命中的）
@@ -126,39 +149,39 @@
       scrollY: window.scrollY
     };
     var entries = collectEntries();
-    var dx0 = ev.clientX + window.scrollX, dy0 = ev.clientY + window.scrollY;
-    // 第一轮：点击直接落在某个符头上（中心 ±11px），立即命中该事件——
-    // 用户点哪个符头就选哪个，密集排列也不串
-    var hit = null, hitD = Infinity;
-    for (var i = 0; i < entries.length; i++) {
-      var ps = entries[i].pts;
-      for (var p = 0; p < ps.length; p++) {
-        var ddx = ps[p].x - dx0, ddy = ps[p].y - dy0;
-        if (Math.abs(ddx) <= 11 && Math.abs(ddy) <= 9) {
-          var d0 = ddx * ddx + ddy * ddy;
-          if (d0 < hitD) { hitD = d0; hit = entries[i]; }
-        }
+    // 第一优先：被点元素自带事件身份（渲染时盖章）——符头/符干/休止符
+    // 都在盖章的组内，点谁选谁，不受密集排列和符干偏移影响
+    var g = null, direct = false;
+    var t = ev.target;
+    while (t && t !== container) {
+      if (t.__ejmEi !== undefined) {
+        g = entries[t.__ejmEi];
+        direct = true;
+        break;
       }
+      t = t.parentElement;
     }
-    // 第二轮：空白处点击时按加权距离找最近符头（Y 权重更高），阈值收紧
-    var g = hit, bestD = hitD;
+    // 兜底：空白处点击按加权距离找最近符头（Y 权重更高），阈值收紧
+    var bestD = 0;
     if (!g) {
-      var best = -1;
+      var dx0 = ev.clientX + window.scrollX, dy0 = ev.clientY + window.scrollY;
+      var best = -1, bestQ = Infinity;
       for (var a = 0; a < entries.length; a++) {
         var qs = entries[a].pts;
         for (var b = 0; b < qs.length; b++) {
           var qx = qs[b].x - dx0, qy = qs[b].y - dy0;
           var q = qx * qx + 2 * qy * qy;
-          if (q < bestD) { bestD = q; best = a; }
+          if (q < bestQ) { bestQ = q; best = a; }
         }
       }
-      if (best >= 0 && bestD <= 55 * 55) g = entries[best];
+      if (best >= 0 && bestQ <= 55 * 55) { g = entries[best]; bestD = bestQ; }
     }
     if (!g) return;
     setSelection(g);
     // 测试/诊断面包屑：最近一次命中的事件身份
     window.__ejmLastClick = {
-      m: g.m, s: g.s, k: g.k, dist: Math.round(Math.sqrt(bestD))
+      m: g.m, s: g.s, k: g.k,
+      dist: direct ? 0 : Math.round(Math.sqrt(bestD))
     };
     post({ event: 'noteClicked', m: g.m, s: g.s, k: g.k });
   }
@@ -187,6 +210,7 @@
       osmd.zoom = zoom;
       osmd.render();
       osmd.cursor.show();
+      cursorClickThrough();
       invalidateEntries();
       var map = buildStepsMap();
       window.scrollTo(0, scrollY);
@@ -213,6 +237,7 @@
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     } catch (e) { /* 无 cursorElement 时忽略 */ }
+    cursorClickThrough();
   }
 
   window.EJMusic = {
@@ -270,7 +295,7 @@
   };
 
   post({ event: 'pageReady' });
-  document.getElementById('container').addEventListener('click', onSheetClick);
+  container.addEventListener('click', onSheetClick);
   // autoResize 重渲染不走 load/setZoom，窗口尺寸变化后坐标缓存要重建
   var __resizeTimer = null;
   window.addEventListener('resize', function () {
