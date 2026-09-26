@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../../core/audio/piano_audio.dart';
+import '../../../core/platform/ime_control.dart';
 import '../../../core/util/rational.dart';
 import '../../../data/render/sheet_webview.dart';
 import '../../../domain/performance/follow_judge.dart';
@@ -33,8 +34,9 @@ class PerformancePage extends ConsumerStatefulWidget {
 }
 
 class _PerformancePageState extends ConsumerState<PerformancePage>
-    // 引擎在播放/暂停/调速时反复重建 ticker，不能用 Single 版
-    with TickerProviderStateMixin {
+        // 引擎在播放/暂停/调速时反复重建 ticker，不能用 Single 版
+        with
+        TickerProviderStateMixin {
   final _sheetController = SheetWebviewController();
   Map<int, double> _stepQuarters = {};
 
@@ -71,6 +73,8 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
   @override
   void initState() {
     super.initState();
+    // 中文 IME 会吃掉 K 等字母快捷键，演奏期间禁用（本页无文本输入）
+    ImeControl.disable();
     _sheetController.events.listen(_onSheetEvent);
     _load();
   }
@@ -768,6 +772,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
 
   @override
   void dispose() {
+    ImeControl.restore();
     _wrongTimer?.cancel();
     _engine?.dispose();
     _audio?.dispose();

@@ -4,6 +4,7 @@
 import 'package:ejmusic/features/editor/ui/editor_page.dart';
 import 'package:ejmusic/main.dart' as app;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -69,6 +70,42 @@ void main() {
     await tester.tap(find.text('删除'));
     await tester.pumpAndSettle(const Duration(seconds: 2));
     expect(find.textContaining('点击上方谱面'), findsOneWidget);
+
+    // ---- 键盘：方向键选择、琴键输入、时值/附点、Insert ----
+    // → 从无选中状态选中第一个事件
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(find.textContaining('已选中'), findsOneWidget);
+
+    // 琴键 A = C4 四分音符（默认输入状态），插入在选中之后并成为新选中
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(find.textContaining('已选中：C4 1/1'), findsOneWidget);
+
+    // . 加一个附点；琴键 W = C#4 → 附点四分（3/2）
+    await tester.sendKeyEvent(LogicalKeyboardKey.period);
+    await tester.pump();
+    expect(find.textContaining('+1附点'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyW);
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(find.textContaining('已选中：C#4 3/2'), findsOneWidget);
+
+    // 数字 4 = 八分音符；琴键 K = 高八度 C5
+    await tester.sendKeyEvent(LogicalKeyboardKey.digit4);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(find.textContaining('已选中：C5 1/2'), findsOneWidget);
+
+    // Insert 用当前输入状态插入 C4（八度 4、八分音符）
+    await tester.sendKeyEvent(LogicalKeyboardKey.insert);
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(find.textContaining('已选中：C4 1/2'), findsOneWidget);
+
+    // Z 降八度 → 状态条显示八度3
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    await tester.pump();
+    expect(find.text('八度3 八分音符'), findsOneWidget);
 
     // 未保存退出 → 放弃确认
     await tester.tap(find.byIcon(Icons.arrow_back));

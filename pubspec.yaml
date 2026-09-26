@@ -49,6 +49,7 @@ dependencies:
   flutter_inappwebview: 6.2.0-beta.3
   wakelock_plus: ^1.2.0
   flutter_soloud: ^5.1.2
+  ffi: ^2.1.0
 
 # 只播 WAV 采样，无需 Opus/Ogg：跳过 Xiph 预编译库的 GitHub 下载（本机网络不通）
 hooks:

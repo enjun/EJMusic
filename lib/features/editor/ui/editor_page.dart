@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/config/app_settings.dart';
+import '../../../core/platform/ime_control.dart';
 import '../../../core/util/rational.dart';
 import '../../../data/render/sheet_webview.dart';
 import '../../../domain/score/convert/to_musicxml.dart';
@@ -49,16 +52,67 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   ScoreEvent? _selected;
   Timer? _renderDebounce;
 
+  // 键盘钢琴输入状态：当前八度（中央 C 所在为 4）、时值、附点数。
+  int _inputOctave = 4;
+  Rational _inputDur = const Rational(1, 1);
+  int _inputDots = 0;
+
+  /// 键盘 1-6 对应的时值（全音符→三十二分音符）。
+  static const List<(String, Rational)> _durPresets = [
+    ('全音符', Rational(4, 1)),
+    ('二分音符', Rational(2, 1)),
+    ('四分音符', Rational(1, 1)),
+    ('八分音符', Rational(1, 2)),
+    ('十六分音符', Rational(1, 4)),
+    ('三十二分音符', Rational(1, 8)),
+  ];
+
+  /// 键盘→琴键映射：(音名, 变化数, 相对当前八度的偏移)。
+  /// A S D F G H J K L = C D E F G A B C₊₁ D₊₁；
+  /// W E T Y U = C♯ D♯ F♯ G♯ A♯；O P = 高八度 C♯ D♯。
+  static final Map<LogicalKeyboardKey, (String, int, int)> _pianoKeys = {
+    LogicalKeyboardKey.keyA: ('C', 0, 0),
+    LogicalKeyboardKey.keyS: ('D', 0, 0),
+    LogicalKeyboardKey.keyD: ('E', 0, 0),
+    LogicalKeyboardKey.keyF: ('F', 0, 0),
+    LogicalKeyboardKey.keyG: ('G', 0, 0),
+    LogicalKeyboardKey.keyH: ('A', 0, 0),
+    LogicalKeyboardKey.keyJ: ('B', 0, 0),
+    LogicalKeyboardKey.keyK: ('C', 0, 1),
+    LogicalKeyboardKey.keyL: ('D', 0, 1),
+    LogicalKeyboardKey.keyW: ('C', 1, 0),
+    LogicalKeyboardKey.keyE: ('D', 1, 0),
+    LogicalKeyboardKey.keyT: ('F', 1, 0),
+    LogicalKeyboardKey.keyY: ('G', 1, 0),
+    LogicalKeyboardKey.keyU: ('A', 1, 0),
+    LogicalKeyboardKey.keyO: ('C', 1, 1),
+    LogicalKeyboardKey.keyP: ('D', 1, 1),
+  };
+
   @override
   void initState() {
     super.initState();
     EditorPage.debugSheet = _sheet;
+    // 中文 IME 会吃掉字母键（VK_PROCESSKEY），编辑期间禁用；文本框获焦时恢复
+    ImeControl.disable();
+    FocusManager.instance.addListener(_focusChanged);
     _reload();
+  }
+
+  void _focusChanged() {
+    final f = FocusManager.instance.primaryFocus;
+    if (f?.context?.widget is EditableText) {
+      ImeControl.restore();
+    } else {
+      ImeControl.disable();
+    }
   }
 
   @override
   void dispose() {
     EditorPage.debugSheet = null;
+    FocusManager.instance.removeListener(_focusChanged);
+    ImeControl.restore();
     _renderDebounce?.cancel();
     _sheet.dispose();
     super.dispose();
@@ -87,11 +141,21 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     if (doc == null) return;
     final sw = Stopwatch()..start();
     try {
-      await _sheet.setZoom(_zoom);
-      await _sheet.loadMusicXml(scoreToMusicXml(doc));
+      // load 本身按当前缩放渲染，不再先 setZoom（避免一次多余的重渲染，
+      // 打开页面时连续两次全量渲染会吞掉最初的点击）
+      await _sheet.loadMusicXml(scoreToMusicXml(doc), zoom: _zoom);
       debugPrint('EJM editor: 渲染完成 ${sw.elapsedMilliseconds}ms');
+      _restoreHighlight();
     } catch (e) {
       debugPrint('EJM editor: 渲染异常 $e');
+    }
+  }
+
+  /// 重渲染会重建 DOM，选中高亮（JS 侧填充色）丢失，渲染后重发。
+  void _restoreHighlight() {
+    final loc = _selected == null ? null : _locate(_selected!);
+    if (loc != null) {
+      unawaited(_sheet.highlight(loc.$3, loc.$1.staff - 1, loc.$2));
     }
   }
 
@@ -137,14 +201,16 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     }
     if (click.eventIndex >= voice.events.length) {
       debugPrint(
-          'EJM editor: 点击事件越界 m=${click.measure} s=${click.staff} '
-          'k=${click.eventIndex} 共${voice.events.length}个事件');
+        'EJM editor: 点击事件越界 m=${click.measure} s=${click.staff} '
+        'k=${click.eventIndex} 共${voice.events.length}个事件',
+      );
       return;
     }
     final event = voice.events[click.eventIndex];
     debugPrint(
-        'EJM editor: 选中 m=${click.measure} s=${click.staff} '
-        'k=${click.eventIndex} → ${eventLabel(event)}');
+      'EJM editor: 选中 m=${click.measure} s=${click.staff} '
+      'k=${click.eventIndex} → ${eventLabel(event)}',
+    );
     setState(() => _selected = event);
     // 高亮：定位到该小节的第一个 cursor 步
     int? step;
@@ -164,8 +230,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         _onReady(event);
       case SheetNoteClicked():
         debugPrint(
-            'EJM editor: noteClicked m=${event.measure} s=${event.staff} '
-            'k=${event.eventIndex}');
+          'EJM editor: noteClicked m=${event.measure} s=${event.staff} '
+          'k=${event.eventIndex}',
+        );
         EditorPage.debugSelectedStep = event.eventIndex;
         _onNoteClicked(event);
       case SheetError(:final message):
@@ -174,10 +241,12 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         if (_doc != null) {
           ScaffoldMessenger.of(context)
             ..hideCurrentSnackBar()
-            ..showSnackBar(SnackBar(
-              content: Text('渲染失败：$message'),
-              duration: const Duration(seconds: 3),
-            ));
+            ..showSnackBar(
+              SnackBar(
+                content: Text('渲染失败：$message'),
+                duration: const Duration(seconds: 3),
+              ),
+            );
         } else {
           setState(() => _error = '渲染失败：$message');
         }
@@ -246,13 +315,46 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   }
 
   void _insertEvent(bool note) {
+    _insertEventAt(
+      ScoreEvent(
+        type: note ? 'note' : 'rest',
+        dur: const Rational(1, 1),
+        pitches: note ? [ScorePitch(step: 'C', alter: 0, octave: 4)] : [],
+      ),
+    );
+  }
+
+  /// 按当前键盘输入状态（八度/时值/附点）插入一个音符，
+  /// 插入位置为选中事件之后，新事件成为选中项（连续输入即顺序追加）。
+  void _insertPianoNote((String, int, int) spec) {
+    final octave = _inputOctave + spec.$3;
+    if (octave < 0 || octave > 8) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('超出音域（八度 0-8），请用 Z/X 调整八度'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      return;
+    }
+    final dots = _inputDots;
+    final e = ScoreEvent(
+      type: 'note',
+      // 附点时值 = 基础时值 × (2 - 2^-dots)：1 附点 ×3/2，2 附点 ×7/4
+      dur: (_inputDur * Rational(2 * (1 << dots) - 1, 1 << dots)).reduced(),
+      dots: dots,
+      pitches: [ScorePitch(step: spec.$1, alter: spec.$2, octave: octave)],
+    );
+    // 连续输入时不逐键弹提示，滚动定位足以确认
+    _insertEventAt(e, feedback: false);
+  }
+
+  /// 在选中事件之后插入 [e]（无选中则追加到末尾），并滚动定位让用户看见。
+  void _insertEventAt(ScoreEvent e, {bool feedback = true}) {
     final doc = _doc;
     if (doc == null) return;
-    final e = ScoreEvent(
-      type: note ? 'note' : 'rest',
-      dur: const Rational(1, 1),
-      pitches: note ? [ScorePitch(step: 'C', alter: 0, octave: 4)] : [],
-    );
     final sel = _selected;
     final loc = sel == null ? null : _locate(sel);
     final int measureIndex;
@@ -260,30 +362,37 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       loc.$1.events.insert(loc.$2 + 1, e);
       measureIndex = loc.$3;
       debugPrint(
-          'EJM editor: 插入${note ? "音符" : "休止"}于 m=$measureIndex '
-          'staff=${loc.$1.staff} index=${loc.$2 + 1}');
+        'EJM editor: 插入 ${eventLabel(e)} 于 m=$measureIndex '
+        'staff=${loc.$1.staff} index=${loc.$2 + 1}',
+      );
     } else {
       final measures = doc.parts.first.measures;
       measures.last.voices.last.events.add(e);
       measureIndex = measures.length - 1;
-      debugPrint('EJM editor: 无选中，${note ? "音符" : "休止"}追加到末尾 m=$measureIndex');
+      debugPrint('EJM editor: 无选中，${eventLabel(e)} 追加到末尾 m=$measureIndex');
     }
     setState(() => _selected = e);
     _afterChange();
-    // 必须让用户看见插入结果：滚动到该小节 + 提示位置
+    // 必须让用户看见插入结果：滚动到该小节（feedback 时再提示位置）
     _revealMeasure(
-        measureIndex, '已在第 ${measureIndex + 1} 小节插入${note ? "音符" : "休止"}');
+      measureIndex,
+      feedback ? '已在第 ${measureIndex + 1} 小节插入${eventLabel(e)}' : null,
+    );
   }
 
-  /// 滚动谱面到指定小节（0 基）并提示。
-  void _revealMeasure(int measureIndex, String message) {
+  /// 滚动谱面到指定小节（0 基）；[message] 非空时同时提示。
+  void _revealMeasure(int measureIndex, String? message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 2),
-      ));
+    if (message != null) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(message),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+    }
     int? step;
     for (final s in _stepMeasure.keys.toList()..sort()) {
       if (_stepMeasure[s] == measureIndex) {
@@ -294,6 +403,51 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     if (step != null) unawaited(_sheet.cursorTo(step));
   }
 
+  /// 全谱事件的一维顺序表（小节序 → 谱表序 → 声部内序），
+  /// 左右方向键按此顺序移动选中。元素 = (声部, 声部内下标, 小节下标)。
+  List<(ScoreVoice, int, int)> _flatEvents() {
+    final doc = _doc;
+    if (doc == null) return [];
+    final out = <(ScoreVoice, int, int)>[];
+    final measures = doc.parts.first.measures;
+    for (var mi = 0; mi < measures.length; mi++) {
+      final voices = [...measures[mi].voices]
+        ..sort((a, b) => a.staff.compareTo(b.staff));
+      for (final v in voices) {
+        for (var i = 0; i < v.events.length; i++) {
+          out.add((v, i, mi));
+        }
+      }
+    }
+    return out;
+  }
+
+  /// 左右方向键移动选中（delta = -1/1）；无选中时选第一个/最后一个。
+  void _selectNeighbor(int delta) {
+    final list = _flatEvents();
+    if (list.isEmpty) return;
+    var idx = -1;
+    final loc = _selected == null ? null : _locate(_selected!);
+    if (loc != null) {
+      for (var i = 0; i < list.length; i++) {
+        if (identical(list[i].$1, loc.$1) && list[i].$2 == loc.$2) {
+          idx = i;
+          break;
+        }
+      }
+    }
+    final next = idx < 0
+        ? (delta > 0 ? 0 : list.length - 1)
+        : math.min(math.max(idx + delta, 0), list.length - 1);
+    if (next == idx) return;
+    final (v, i, mi) = list[next];
+    final e = v.events[i];
+    debugPrint('EJM editor: 方向键选择 m=$mi staff=${v.staff} index=$i');
+    setState(() => _selected = e);
+    _sheet.highlight(mi, v.staff - 1, i);
+    _revealMeasure(mi, null);
+  }
+
   void _deleteSelected() {
     final sel = _selected;
     if (sel == null) return;
@@ -301,7 +455,8 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     if (loc == null) return;
     loc.$1.events.removeAt(loc.$2);
     debugPrint(
-        'EJM editor: 删除 m=${loc.$3} staff=${loc.$1.staff} index=${loc.$2}');
+      'EJM editor: 删除 m=${loc.$3} staff=${loc.$1.staff} index=${loc.$2}',
+    );
     setState(() => _selected = null);
     _afterChange();
   }
@@ -318,92 +473,198 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     }
   }
 
+  // ---- 键盘输入 ----
+
+  /// 焦点在文本框里、或对话框等路由覆盖在本页之上时不劫持按键。
+  bool _keyboardBlocked() {
+    if (ModalRoute.of(context)?.isCurrent != true) return true;
+    final f = FocusManager.instance.primaryFocus;
+    return f?.context?.widget is EditableText;
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    if (_keyboardBlocked()) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+
+    // 左右方向键：选择前一个/后一个事件
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      _selectNeighbor(-1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowRight) {
+      _selectNeighbor(1);
+      return KeyEventResult.handled;
+    }
+    // Insert：插入新音符（默认音 C，当前八度/时值）
+    if (key == LogicalKeyboardKey.insert) {
+      _insertPianoNote(('C', 0, 0));
+      return KeyEventResult.handled;
+    }
+    // Z/X：降/升八度
+    if (key == LogicalKeyboardKey.keyZ || key == LogicalKeyboardKey.keyX) {
+      final dir = key == LogicalKeyboardKey.keyX ? 1 : -1;
+      setState(
+        () => _inputOctave = math.min(math.max(_inputOctave + dir, 0), 8),
+      );
+      return KeyEventResult.handled;
+    }
+    // 1-6：时值（同步清零附点）
+    const digitKeys = [
+      LogicalKeyboardKey.digit1,
+      LogicalKeyboardKey.digit2,
+      LogicalKeyboardKey.digit3,
+      LogicalKeyboardKey.digit4,
+      LogicalKeyboardKey.digit5,
+      LogicalKeyboardKey.digit6,
+    ];
+    const numpadKeys = [
+      LogicalKeyboardKey.numpad1,
+      LogicalKeyboardKey.numpad2,
+      LogicalKeyboardKey.numpad3,
+      LogicalKeyboardKey.numpad4,
+      LogicalKeyboardKey.numpad5,
+      LogicalKeyboardKey.numpad6,
+    ];
+    var presetIdx = digitKeys.indexOf(key);
+    if (presetIdx < 0) presetIdx = numpadKeys.indexOf(key);
+    if (presetIdx >= 0) {
+      setState(() {
+        _inputDur = _durPresets[presetIdx].$2;
+        _inputDots = 0;
+      });
+      return KeyEventResult.handled;
+    }
+    // . ：附点循环 0→1→2→0
+    if (key == LogicalKeyboardKey.period ||
+        key == LogicalKeyboardKey.numpadDecimal) {
+      setState(() => _inputDots = (_inputDots + 1) % 3);
+      return KeyEventResult.handled;
+    }
+    // 0：插入休止符
+    if (key == LogicalKeyboardKey.digit0 || key == LogicalKeyboardKey.numpad0) {
+      _insertEvent(false);
+      return KeyEventResult.handled;
+    }
+    // 字母键：钢琴琴键输入
+    final spec = _pianoKeys[key];
+    if (spec != null) {
+      _insertPianoNote(spec);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  String _durLabel() {
+    for (final (name, d) in _durPresets) {
+      if (d == _inputDur) return name;
+    }
+    return '$_inputDur';
+  }
+
   @override
   Widget build(BuildContext context) {
     final doc = _doc;
     final navigator = Navigator.of(context);
-    return PopScope(
-      canPop: !_dirty,
-      onPopInvokedWithResult: (didPop, _) async {
-        if (didPop || !_dirty) return;
-        final discard = await showDialog<bool>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('放弃修改？'),
-            content: const Text('有未保存的修改，退出将丢失。'),
+    return Focus(
+      autofocus: true,
+      onKeyEvent: _handleKeyEvent,
+      child: PopScope(
+        canPop: !_dirty,
+        onPopInvokedWithResult: (didPop, _) async {
+          if (didPop || !_dirty) return;
+          final discard = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('放弃修改？'),
+              content: const Text('有未保存的修改，退出将丢失。'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('继续编辑'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('放弃修改'),
+                ),
+              ],
+            ),
+          );
+          if (discard == true && mounted) {
+            navigator.pop();
+          }
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('编辑曲谱'),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('继续编辑'),
+              IconButton(
+                tooltip: '放弃修改并还原',
+                icon: const Icon(Icons.restart_alt),
+                onPressed: _dirty ? _reload : null,
               ),
-              FilledButton(
-                onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text('放弃修改'),
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: FilledButton.icon(
+                  onPressed: _saving ? null : _save,
+                  icon: _saving
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.save_outlined),
+                  label: const Text('保存'),
+                ),
               ),
             ],
           ),
-        );
-        if (discard == true && mounted) {
-          navigator.pop();
-        }
-      },
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('编辑曲谱'),
-          actions: [
-            IconButton(
-              tooltip: '放弃修改并还原',
-              icon: const Icon(Icons.restart_alt),
-              onPressed: _dirty ? _reload : null,
-            ),
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: FilledButton.icon(
-                onPressed: _saving ? null : _save,
-                icon: _saving
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.save_outlined),
-                label: const Text('保存'),
-              ),
-            ),
-          ],
-        ),
-        body: _error != null
-            ? Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(_error!, textAlign: TextAlign.center),
-                ),
-              )
-            : doc == null
-            ? const Center(child: CircularProgressIndicator())
-            : Column(
-                children: [
-                  _buildToolbar(),
-                  Expanded(flex: 5, child: _buildWebView()),
-                  const Divider(height: 1),
-                  _buildSelectionBar(),
-                  Expanded(
-                    flex: 4,
-                    child: ListView(
-                      padding: const EdgeInsets.all(12),
-                      children: [
-                        _buildMetaCard(doc),
-                        const SizedBox(height: 24),
-                      ],
-                    ),
+          body: _error != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(_error!, textAlign: TextAlign.center),
                   ),
-                ],
-              ),
+                )
+              : doc == null
+              ? const Center(child: CircularProgressIndicator())
+              : Column(
+                  children: [
+                    _buildToolbar(),
+                    _buildKeyboardHint(),
+                    Expanded(flex: 5, child: _buildWebView()),
+                    const Divider(height: 1),
+                    _buildSelectionBar(),
+                    Expanded(
+                      flex: 4,
+                      child: ListView(
+                        padding: const EdgeInsets.all(12),
+                        children: [
+                          _buildMetaCard(doc),
+                          const SizedBox(height: 24),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+        ),
       ),
     );
   }
 
   // ---- 谱面工具条 ----
+
+  Widget _buildKeyboardHint() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+      child: Text(
+        '键盘输入：A–L=白键 C–D₅，W/E/T/Y/U/O/P=黑键，Z/X=八度∓，'
+        '1–6=时值，.=附点，0=休止，←/→=选音符，Insert=插入',
+        style: TextStyle(fontSize: 11, color: Theme.of(context).hintColor),
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
 
   Widget _buildToolbar() {
     // Wrap 而不是 Row+Spacer：窄窗口下按钮换行而不是被裁出屏幕外
@@ -454,6 +715,8 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: Row(
         children: [
+          _buildInputStateChip(),
+          const SizedBox(width: 10),
           Expanded(
             child: Text(
               sel == null ? '点击上方谱面的音符或休止符进行编辑' : '已选中：${eventLabel(sel)}',
@@ -467,6 +730,22 @@ class _EditorPageState extends ConsumerState<EditorPage> {
               child: const Text('编辑'),
             ),
         ],
+      ),
+    );
+  }
+
+  /// 当前键盘输入状态（八度/时值/附点），随按键实时更新。
+  Widget _buildInputStateChip() {
+    final dots = _inputDots > 0 ? '+$_inputDots附点' : '';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
+      ),
+      child: Text(
+        '八度$_inputOctave ${_durLabel()}$dots',
+        style: const TextStyle(fontSize: 12),
       ),
     );
   }
@@ -509,10 +788,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
           },
           onLoadStop: (_, _) async {
             await _sheet.pageReady;
-            await _sheet.setZoom(_zoom);
             final doc = _doc;
             if (doc != null) {
-              await _sheet.loadMusicXml(scoreToMusicXml(doc));
+              await _sheet.loadMusicXml(scoreToMusicXml(doc), zoom: _zoom);
             }
           },
         );

@@ -124,8 +124,8 @@ class SheetWebviewController {
     );
   }
 
-  Future<void> loadMusicXml(String xml) async =>
-      _call({'op': 'load', 'xml': xml});
+  Future<void> loadMusicXml(String xml, {double? zoom}) async =>
+      _call({'op': 'load', 'xml': xml, 'zoom': ?zoom});
   Future<void> cursorTo(int step) async =>
       _call({'op': 'cursorTo', 'step': step});
   Future<void> selectStep(int step) async =>
@@ -133,6 +133,11 @@ class SheetWebviewController {
   Future<void> cursorReset() async => _call({'op': 'cursorReset'});
   Future<void> setZoom(double zoom) async =>
       _call({'op': 'setZoom', 'zoom': zoom});
+
+  /// 高亮谱面上的事件 (小节 m, 谱表 s 0基, 声部内事件序号 k)。
+  /// 蓝色填充该音符符头；重渲染后由编辑器在渲染完成时重发。
+  Future<void> highlight(int m, int s, int k) async =>
+      _call({'op': 'highlight', 'm': m, 's': s, 'k': k});
 
   /// 集成测试用：在宿主页执行 JS 并返回结果（callAsyncJavaScript 语义）。
   Future<dynamic> debugEvalJs(String functionBody) async {

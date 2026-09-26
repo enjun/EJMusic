@@ -55,9 +55,24 @@
   // 从 OSMD 图形模型收集每个 voice entry 的 DOM 位置与事件身份：
   // m=小节下标、s=谱表下标（0基）、k=该谱表该小节内第 k 个事件。
   // 和弦是一个 voice entry（多符头只记首个符头位置）。
+  // 坐标缓存为文档坐标（页面坐标+滚动量），渲染/缩放后失效重建，
+  // 避免每次点击都对全部符头做 getBoundingClientRect。
+
+  var __entriesCache = null;
+  var __selEl = null;
+
+  function invalidateEntries() {
+    __entriesCache = null;
+    if (__selEl) {
+      __selEl.style.fill = '';
+      __selEl = null;
+    }
+  }
 
   function collectEntries() {
+    if (__entriesCache) return __entriesCache;
     var out = [];
+    var sx = window.scrollX, sy = window.scrollY;
     var measures = osmd.GraphicSheet.MeasureList;
     for (var mi = 0; mi < measures.length; mi++) {
       var staves = measures[mi];
@@ -75,27 +90,42 @@
           if (!el || !el.getBoundingClientRect) continue;
           var r = el.getBoundingClientRect();
           out.push({
-            x: r.left + r.width / 2,
-            y: r.top + r.height / 2,
+            x: r.left + sx + r.width / 2,
+            y: r.top + sy + r.height / 2,
+            el: el,
             m: mi, s: si, k: ei
           });
         }
       }
     }
+    __entriesCache = out;
     return out;
   }
 
   function onSheetClick(ev) {
     if (!osmd) return;
+    // 诊断面包屑：所有到达页面的点击原始坐标（含未命中的）
+    window.__ejmLastRawClick = {
+      x: Math.round(ev.clientX * 10) / 10,
+      y: Math.round(ev.clientY * 10) / 10,
+      screenX: ev.screenX ? Math.round(ev.screenX) : 0,
+      screenY: ev.screenY ? Math.round(ev.screenY) : 0,
+      scrollY: window.scrollY
+    };
     var entries = collectEntries();
+    var dx0 = ev.clientX + window.scrollX, dy0 = ev.clientY + window.scrollY;
     var best = -1, bestD = Infinity;
     for (var i = 0; i < entries.length; i++) {
-      var dx = entries[i].x - ev.clientX, dy = entries[i].y - ev.clientY;
+      var dx = entries[i].x - dx0, dy = entries[i].y - dy0;
       var d = dx * dx + 2 * dy * dy;
       if (d < bestD) { bestD = d; best = i; }
     }
     if (best < 0 || bestD > 80 * 80) return;
     var g = entries[best];
+    // 直接高亮选中音符（重渲染时随缓存一起清除）
+    if (__selEl && __selEl !== g.el) __selEl.style.fill = '';
+    __selEl = g.el;
+    __selEl.style.fill = '#1a73e8';
     // 测试/诊断面包屑：最近一次命中的事件身份
     window.__ejmLastClick = {
       m: g.m, s: g.s, k: g.k, dist: Math.round(Math.sqrt(bestD))
@@ -127,6 +157,7 @@
       osmd.zoom = zoom;
       osmd.render();
       osmd.cursor.show();
+      invalidateEntries();
       var map = buildStepsMap();
       window.scrollTo(0, scrollY);
       post({ event: 'ready', totalSteps: map.total, stepsMap: map.steps });
@@ -159,7 +190,22 @@
       try {
         switch (cmd.op) {
           case 'load':
+            if (typeof cmd.zoom === 'number') zoom = cmd.zoom;
             await loadMusicXml(cmd.xml);
+            break;
+          case 'highlight':
+            if (osmd) {
+              var entries = collectEntries();
+              for (var i = 0; i < entries.length; i++) {
+                if (entries[i].m === cmd.m && entries[i].s === cmd.s
+                    && entries[i].k === cmd.k) {
+                  if (__selEl) __selEl.style.fill = '';
+                  __selEl = entries[i].el;
+                  __selEl.style.fill = '#1a73e8';
+                  break;
+                }
+              }
+            }
             break;
           case 'cursorTo':
             cursorTo(cmd.step, true);
@@ -180,6 +226,7 @@
               osmd.zoom = zoom;
               osmd.render();
               osmd.cursor.show();
+              invalidateEntries();
               window.scrollTo(0, sy);
             }
             break;
