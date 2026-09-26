@@ -77,7 +77,7 @@ void main() {
                     return null;
                   });
             },
-            onLoadStop: (_, __) async {
+            onLoadStop: (_, _) async {
               await Future.delayed(const Duration(milliseconds: 300));
               await controller.loadMusicXml(buildScoreXml());
               loaded.complete();
