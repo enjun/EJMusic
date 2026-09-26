@@ -39,14 +39,68 @@
   function buildStepsMap() {
     osmd.cursor.reset();
     var total = 0;
-    var steps = [{ step: 0, quarter: 0 }];
+    var steps = [{ step: 0, quarter: 0, m: -1 }];
     while (!osmd.cursor.iterator.endReached && total < MAX_STEPS) {
       osmd.cursor.next();
       total++;
-      steps.push({ step: total, quarter: quarterAtStep() });
+      var it = osmd.cursor.iterator;
+      var m = typeof it.currentMeasureIndex === 'number' ? it.currentMeasureIndex : -1;
+      steps.push({ step: total, quarter: quarterAtStep(), m: m });
     }
     osmd.cursor.reset();
     return { total: total, steps: steps };
+  }
+
+  // ---- 点击选中（编辑器用）----
+  // 从 OSMD 图形模型收集每个 voice entry 的 DOM 位置与事件身份：
+  // m=小节下标、s=谱表下标（0基）、k=该谱表该小节内第 k 个事件。
+  // 和弦是一个 voice entry（多符头只记首个符头位置）。
+
+  function collectEntries() {
+    var out = [];
+    var measures = osmd.GraphicSheet.MeasureList;
+    for (var mi = 0; mi < measures.length; mi++) {
+      var staves = measures[mi];
+      for (var si = 0; si < staves.length; si++) {
+        var gm = staves[si];
+        if (!gm) continue;
+        var ses = gm.staffEntries || [];
+        for (var ei = 0; ei < ses.length; ei++) {
+          var ves = ses[ei].graphicalVoiceEntries || [];
+          if (!ves.length) continue;
+          var notes = ves[0].notes || [];
+          if (!notes.length) continue;
+          var el = null;
+          try { el = notes[0].getSVGGElement(); } catch (err) { el = null; }
+          if (!el || !el.getBoundingClientRect) continue;
+          var r = el.getBoundingClientRect();
+          out.push({
+            x: r.left + r.width / 2,
+            y: r.top + r.height / 2,
+            m: mi, s: si, k: ei
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  function onSheetClick(ev) {
+    if (!osmd) return;
+    var entries = collectEntries();
+    var best = -1, bestD = Infinity;
+    for (var i = 0; i < entries.length; i++) {
+      var dx = entries[i].x - ev.clientX, dy = entries[i].y - ev.clientY;
+      var d = dx * dx + 2 * dy * dy;
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    if (best < 0 || bestD > 80 * 80) return;
+    var g = entries[best];
+    // 测试/诊断面包屑：最近一次命中的事件身份
+    window.__ejmLastClick = {
+      m: g.m, s: g.s, k: g.k, dist: Math.round(Math.sqrt(bestD))
+    };
+    post({ event: 'noteClicked', m: g.m, s: g.s, k: g.k });
   }
 
   function ensureOsmd() {
@@ -77,7 +131,7 @@
     }
   }
 
-  function cursorTo(step) {
+  function cursorTo(step, scroll) {
     if (!osmd || !osmd.cursor) return;
     osmd.cursor.reset();
     var i = 0;
@@ -85,6 +139,7 @@
       osmd.cursor.next();
       i++;
     }
+    if (!scroll) return;
     // osmd-extended 的 followCursor 未必在 next() 里触发滚动，兜底手动滚
     try {
       var el = osmd.cursor.cursorElement;
@@ -102,7 +157,10 @@
             await loadMusicXml(cmd.xml);
             break;
           case 'cursorTo':
-            cursorTo(cmd.step);
+            cursorTo(cmd.step, true);
+            break;
+          case 'select':
+            cursorTo(cmd.step, false);
             break;
           case 'cursorReset':
             if (osmd) {
@@ -130,6 +188,7 @@
   };
 
   post({ event: 'pageReady' });
+  document.getElementById('container').addEventListener('click', onSheetClick);
 })();
 </script>
 </body>

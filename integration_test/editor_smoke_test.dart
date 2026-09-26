@@ -1,8 +1,10 @@
-// 编辑器冒烟：打开已制谱曲目的编辑页、事件对话框、脏状态与放弃确认。
+// 编辑器冒烟：谱面点击选中 → 编辑对话框 → 插入/删除 → 放弃确认。
 // 运行：flutter test integration_test/editor_smoke_test.dart -d windows
 // 前置：真实数据库中已有种子曲「小星星（种入）」（tool/seed_score.dart）。
+import 'package:ejmusic/features/editor/ui/editor_page.dart';
 import 'package:ejmusic/main.dart' as app;
 import 'package:flutter/material.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -10,7 +12,7 @@ void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   binding.framePolicy = LiveTestWidgetsFlutterBindingFramePolicy.fullyLive;
 
-  testWidgets('编辑曲谱页冒烟', (tester) async {
+  testWidgets('编辑曲谱页冒烟（谱面点击）', (tester) async {
     await app.main();
     await tester.pumpAndSettle(const Duration(seconds: 2));
 
@@ -18,42 +20,62 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('编辑曲谱'));
     await tester.pump();
-    await Future.delayed(const Duration(seconds: 2));
+    await Future.delayed(const Duration(seconds: 5));
     await tester.pump();
 
-    // 小节卡片与事件 chips 渲染
+    // 谱面渲染 + 工具条
+    expect(find.byType(InAppWebView), findsOneWidget);
     expect(find.text('曲谱信息'), findsOneWidget);
-    expect(find.textContaining('第 '), findsWidgets);
-    expect(find.byType(ActionChip), findsWidgets);
+    expect(find.text('插入音符'), findsOneWidget);
+    expect(find.textContaining('点击上方谱面'), findsOneWidget);
 
-    // 打开事件编辑对话框并取消
-    await tester.tap(find.byType(ActionChip).first);
+    // 派发真实 DOM 点击到第 3 个符头/休止符上（冒泡到 container 监听器）
+    final sheet = EditorPage.debugSheet;
+    expect(sheet, isNotNull);
+    final glyphs = await sheet!.debugEvalJs('''
+      return document.querySelectorAll('[class*="vf-notehead"],[class*="vf-rest"]').length;
+    ''');
+    expect(glyphs, greaterThan(3));
+    EditorPage.debugSelectedStep = null;
+    await sheet.debugEvalJs('''
+      var els = document.querySelectorAll('[class*="vf-notehead"],[class*="vf-rest"]');
+      var r = els[2].getBoundingClientRect();
+      els[2].dispatchEvent(new MouseEvent('click', {
+        clientX: r.left + r.width / 2,
+        clientY: r.top + r.height / 2,
+        bubbles: true
+      }));
+    ''');
+    // 等 noteClicked 事件跨桥回来
+    for (var i = 0; i < 20 && EditorPage.debugSelectedStep == null; i++) {
+      await Future.delayed(const Duration(milliseconds: 100));
+      await tester.pump();
+    }
+    expect(EditorPage.debugSelectedStep, isNotNull);
+    await tester.pump();
+    expect(find.textContaining('已选中'), findsOneWidget);
+
+    // 选中项打开编辑对话框后取消
+    await tester.tap(find.text('编辑'));
     await tester.pumpAndSettle();
     expect(find.text('编辑事件'), findsOneWidget);
-    expect(find.text('确定'), findsOneWidget);
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
 
-    // 改 BPM 触发脏状态 → 返回弹出放弃确认
-    final bpmField = find.widgetWithText(TextField, 'BPM');
-    expect(bpmField, findsOneWidget);
-    await tester.enterText(bpmField, '120');
-    await tester.pump();
+    // 插入音符（无选中则追加，插完自动选中）→ 再删除，净零改动
+    await tester.tap(find.text('插入音符'));
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(find.textContaining('已选中'), findsOneWidget);
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+    expect(find.textContaining('点击上方谱面'), findsOneWidget);
+
+    // 未保存退出 → 放弃确认
     await tester.tap(find.byIcon(Icons.arrow_back));
     await tester.pumpAndSettle();
     expect(find.text('放弃修改？'), findsOneWidget);
-
-    // 继续编辑 → 撤销还原 → 可直接返回
-    await tester.tap(find.text('继续编辑'));
+    await tester.tap(find.text('放弃修改'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(Icons.restart_alt));
-    await tester.pumpAndSettle();
-    await Future.delayed(const Duration(milliseconds: 500));
-    await tester.pump();
-    expect(find.text('放弃修改？'), findsNothing);
-    await tester.tap(find.byIcon(Icons.arrow_back));
-    await tester.pumpAndSettle();
-    // 回到详情页
     expect(find.text('演奏模式'), findsOneWidget);
   }, timeout: const Timeout(Duration(minutes: 5)));
 }
