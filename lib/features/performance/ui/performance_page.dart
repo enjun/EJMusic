@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -32,7 +33,8 @@ class PerformancePage extends ConsumerStatefulWidget {
 }
 
 class _PerformancePageState extends ConsumerState<PerformancePage>
-    with SingleTickerProviderStateMixin {
+    // 引擎在播放/暂停/调速时反复重建 ticker，不能用 Single 版
+    with TickerProviderStateMixin {
   final _sheetController = SheetWebviewController();
   Map<int, double> _stepQuarters = {};
 
@@ -43,6 +45,8 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
 
   FollowMode _mode = FollowMode.followAlong;
   bool _playing = false;
+  bool _paused = false;
+  bool _showKeyboard = true;
   int _index = -1;
   double _speed = 1.0;
 
@@ -136,7 +140,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     if (midis.isEmpty) return;
     final avg = midis.reduce((a, b) => a + b) / midis.length;
     if (avg >= _kbLow + 6 && avg <= _kbHigh - 6) return;
-    var low = (avg - 18).round().clamp(21, 72) ;
+    var low = (avg - 18).round().clamp(21, 72);
     while (low % 12 != 0) {
       low--;
     }
@@ -149,7 +153,9 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
   // ---- 曲谱 WebView ----
 
   String _xmlFor(int index) => _volumeXml.putIfAbsent(
-      index, () => scoreToMusicXml(_volumes![index].document));
+    index,
+    () => scoreToMusicXml(_volumes![index].document),
+  );
 
   ScoreVolume _volumeFor(Rational q) {
     final vols = _volumes!;
@@ -249,6 +255,22 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     }
   }
 
+  /// 播放/暂停/继续 三态切换（聆听模式）。
+  void _togglePlay() {
+    final engine = _engine;
+    if (_playing && engine != null && engine.playing) {
+      engine.pause();
+      setState(() => _paused = true);
+      return;
+    }
+    if (engine != null && _paused) {
+      engine.play();
+      setState(() => _paused = false);
+      return;
+    }
+    _startListen();
+  }
+
   void _startListen() {
     var engine = _engine;
     if (engine == null) {
@@ -260,7 +282,10 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     }
     engine.bpm = _documentBpm;
     engine.speed = _speed;
-    setState(() => _playing = true);
+    setState(() {
+      _playing = true;
+      _paused = false;
+    });
     engine.play();
   }
 
@@ -281,7 +306,8 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
       for (final m in note.midis) {
         audio.noteOn(m);
       }
-      final durMs = (note.durQ.toDouble() * 60 / _documentBpm * _speed * 1000).round();
+      final durMs = (note.durQ.toDouble() * 60 / _documentBpm * _speed * 1000)
+          .round();
       Timer(Duration(milliseconds: durMs.clamp(80, 8000)), () {
         for (final m in note.midis) {
           audio.noteOff(m);
@@ -298,7 +324,10 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
 
   void _onListenEnded() {
     if (!mounted) return;
-    setState(() => _playing = false);
+    setState(() {
+      _playing = false;
+      _paused = false;
+    });
     _switchToVolume(0);
     _sheetController.cursorReset();
   }
@@ -307,6 +336,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     _engine?.stop();
     setState(() {
       _playing = false;
+      _paused = false;
       _index = -1;
       _pressed = {};
       _satisfied = {};
@@ -380,7 +410,8 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
       builder: (ctx) => AlertDialog(
         title: const Text('演奏完成'),
         content: Text(
-            '按键正确率 ${(judge.accuracy * 100).toStringAsFixed(0)}%（错误 ${judge.wrongCount} 次）'),
+          '按键正确率 ${(judge.accuracy * 100).toStringAsFixed(0)}%（错误 ${judge.wrongCount} 次）',
+        ),
         actions: [
           TextButton(
             onPressed: () {
@@ -406,51 +437,145 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     final song = songAsync.value;
     final total = _volumes?.length ?? 0;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('演奏 · ${song?.title ?? ''}'),
-        actions: [
-          if (total > 1) ...[
-            IconButton(
-              tooltip: '上一册',
-              icon: const Icon(Icons.navigate_before),
-              onPressed: _volumeIndex > 0
-                  ? () => _switchToVolume(_volumeIndex - 1)
-                  : null,
+    return Shortcuts(
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.space): _PlayPauseIntent(),
+        SingleActivator(LogicalKeyboardKey.escape): _ResetIntent(),
+        SingleActivator(LogicalKeyboardKey.keyK): _ToggleKeyboardIntent(),
+        SingleActivator(LogicalKeyboardKey.add): _SpeedUpIntent(),
+        SingleActivator(LogicalKeyboardKey.equal): _SpeedUpIntent(),
+        SingleActivator(LogicalKeyboardKey.minus): _SpeedDownIntent(),
+        SingleActivator(LogicalKeyboardKey.arrowLeft): _PrevVolumeIntent(),
+        SingleActivator(LogicalKeyboardKey.arrowRight): _NextVolumeIntent(),
+      },
+      child: Actions(
+        actions: {
+          _PlayPauseIntent: _PerfAction(_onPlayPauseHotkey),
+          _ResetIntent: _PerfAction(_onResetPressed),
+          _ToggleKeyboardIntent: _PerfAction(_toggleKeyboard),
+          _SpeedUpIntent: _PerfAction(() => _bumpSpeed(0.1)),
+          _SpeedDownIntent: _PerfAction(() => _bumpSpeed(-0.1)),
+          _PrevVolumeIntent: _PerfAction(() {
+            if (_volumeIndex > 0) _switchToVolume(_volumeIndex - 1);
+          }),
+          _NextVolumeIntent: _PerfAction(() {
+            if (_volumeIndex < total - 1) _switchToVolume(_volumeIndex + 1);
+          }),
+        },
+        // 页面初始就有焦点，快捷键不依赖用户先点过某个控件
+        child: Focus(
+          autofocus: true,
+          child: Scaffold(
+            appBar: AppBar(
+              title: Text('演奏 · ${song?.title ?? ''}'),
+              actions: [
+                if (total > 1) ...[
+                  IconButton(
+                    tooltip: '上一册',
+                    icon: const Icon(Icons.navigate_before),
+                    onPressed: _volumeIndex > 0
+                        ? () => _switchToVolume(_volumeIndex - 1)
+                        : null,
+                  ),
+                  Center(
+                    child: Text(
+                      '第 ${_volumeIndex + 1}/$total 册',
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '下一册',
+                    icon: const Icon(Icons.navigate_next),
+                    onPressed: _volumeIndex < total - 1
+                        ? () => _switchToVolume(_volumeIndex + 1)
+                        : null,
+                  ),
+                ],
+                IconButton(
+                  tooltip: _showKeyboard ? '隐藏键盘 (K)' : '显示键盘 (K)',
+                  icon: Icon(_showKeyboard ? Icons.piano : Icons.piano_off),
+                  onPressed: _toggleKeyboard,
+                ),
+                IconButton(
+                  tooltip: '快捷键',
+                  icon: const Icon(Icons.keyboard_outlined),
+                  onPressed: _showHotkeyHelp,
+                ),
+                IconButton(
+                  tooltip: '重新开始 (Esc)',
+                  icon: const Icon(Icons.replay),
+                  onPressed: _onResetPressed,
+                ),
+              ],
             ),
-            Center(
-              child: Text('第 ${_volumeIndex + 1}/$total 册',
-                  style: const TextStyle(fontSize: 14)),
-            ),
-            IconButton(
-              tooltip: '下一册',
-              icon: const Icon(Icons.navigate_next),
-              onPressed: _volumeIndex < total - 1
-                  ? () => _switchToVolume(_volumeIndex + 1)
-                  : null,
+            body: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null && _timeline == null
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(_error!, textAlign: TextAlign.center),
+                    ),
+                  )
+                : Column(
+                    children: [
+                      Expanded(child: _buildScore()),
+                      _buildControls(),
+                      if (_showKeyboard) _buildKeyboard(),
+                    ],
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---- 快捷键 ----
+
+  void _onPlayPauseHotkey() {
+    if (_mode == FollowMode.followAlong) {
+      final judge = _judge;
+      if (judge != null && judge.phase != JudgePhase.awaiting) _startFollow();
+      return;
+    }
+    _togglePlay();
+  }
+
+  void _toggleKeyboard() => setState(() => _showKeyboard = !_showKeyboard);
+
+  void _bumpSpeed(double delta) {
+    if (_mode != FollowMode.listen) return;
+    _setSpeed((_speed + delta).clamp(0.5, 1.5));
+  }
+
+  void _showHotkeyHelp() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('快捷键'),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('空格：开始跟弹 / 播放·暂停·继续'),
+            Text('Esc：停止并回到开头'),
+            Text('K：显示 / 隐藏钢琴键盘'),
+            Text('+ / -：速度 ±10%（聆听模式）'),
+            Text('← / →：上一册 / 下一册'),
+            SizedBox(height: 8),
+            Text(
+              '若按键无反应，请先点击页面空白处，让焦点离开曲谱区。',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
-          IconButton(
-            tooltip: '重新开始',
-            icon: const Icon(Icons.replay),
-            onPressed: _onResetPressed,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('知道了'),
           ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null && _timeline == null
-              ? Center(child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(_error!, textAlign: TextAlign.center),
-                ))
-              : Column(
-                  children: [
-                    Expanded(child: _buildScore()),
-                    _buildControls(),
-                    _buildKeyboard(),
-                  ],
-                ),
     );
   }
 
@@ -492,13 +617,17 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
               ),
               onWebViewCreated: (w) {
                 _sheetController.attach(w);
-                w.addJavaScriptHandler(handlerName: 'ejm', callback: (args) {
-                  if (args.isNotEmpty && args.first is Map) {
-                    _sheetController
-                        .handleEvent(SheetEvent.from(args.first as Map));
-                  }
-                  return null;
-                });
+                w.addJavaScriptHandler(
+                  handlerName: 'ejm',
+                  callback: (args) {
+                    if (args.isNotEmpty && args.first is Map) {
+                      _sheetController.handleEvent(
+                        SheetEvent.from(args.first as Map),
+                      );
+                    }
+                    return null;
+                  },
+                );
               },
               onLoadStop: (_, _) async {
                 await _sheetController.pageReady;
@@ -510,8 +639,10 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
                 left: 12,
                 top: 12,
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.black54,
                     borderRadius: BorderRadius.circular(12),
@@ -532,6 +663,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
 
   Widget _buildControls() {
     final judge = _judge;
+    final isListen = _mode == FollowMode.listen;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: Column(
@@ -540,14 +672,17 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
             children: [
               SegmentedButton<FollowMode>(
                 segments: const [
-                  ButtonSegment(value: FollowMode.followAlong, label: Text('跟弹')),
+                  ButtonSegment(
+                    value: FollowMode.followAlong,
+                    label: Text('跟弹'),
+                  ),
                   ButtonSegment(value: FollowMode.listen, label: Text('聆听')),
                 ],
                 selected: {_mode},
                 onSelectionChanged: (s) => _switchMode(s.first),
               ),
               const SizedBox(width: 12),
-              if (_mode == FollowMode.followAlong)
+              if (!isListen)
                 FilledButton.icon(
                   onPressed: judge == null || judge.phase == JudgePhase.awaiting
                       ? null
@@ -557,22 +692,39 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
                 )
               else ...[
                 IconButton.filled(
-                  onPressed: _playing ? _stopAll : _startListen,
-                  icon: Icon(_playing ? Icons.stop : Icons.play_arrow),
-                  tooltip: _playing ? '停止' : '播放',
-                ),
-                Expanded(
-                  child: Slider(
-                    value: _speed,
-                    min: 0.5,
-                    max: 1.5,
-                    divisions: 20,
-                    label: '${(_speed * 100).round()}%',
-                    onChanged: _setSpeed,
+                  onPressed: _togglePlay,
+                  icon: Icon(
+                    _playing && !_paused ? Icons.pause : Icons.play_arrow,
                   ),
+                  tooltip: _playing && !_paused
+                      ? '暂停 (空格)'
+                      : _paused
+                      ? '继续 (空格)'
+                      : '播放 (空格)',
                 ),
-                Text('${(_speed * 100).round()}%'),
+                IconButton(
+                  onPressed: _playing ? _stopAll : null,
+                  icon: const Icon(Icons.stop),
+                  tooltip: '停止 (Esc)',
+                ),
               ],
+            ],
+          ),
+          Row(
+            children: [
+              const Text('速度', style: TextStyle(fontSize: 13)),
+              Expanded(
+                child: Slider(
+                  value: _speed,
+                  min: 0.5,
+                  max: 1.5,
+                  divisions: 20,
+                  label: '${(_speed * 100).round()}%',
+                  // 跟弹模式节奏由人控制，速度仅聆听时生效
+                  onChanged: isListen ? _setSpeed : null,
+                ),
+              ),
+              Text('${(_speed * 100).round()}%'),
             ],
           ),
         ],
@@ -621,5 +773,47 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     _audio?.dispose();
     WakelockPlus.disable();
     super.dispose();
+  }
+}
+
+// ---- 快捷键 intents ----
+
+class _PlayPauseIntent extends Intent {
+  const _PlayPauseIntent();
+}
+
+class _ResetIntent extends Intent {
+  const _ResetIntent();
+}
+
+class _ToggleKeyboardIntent extends Intent {
+  const _ToggleKeyboardIntent();
+}
+
+class _SpeedUpIntent extends Intent {
+  const _SpeedUpIntent();
+}
+
+class _SpeedDownIntent extends Intent {
+  const _SpeedDownIntent();
+}
+
+class _PrevVolumeIntent extends Intent {
+  const _PrevVolumeIntent();
+}
+
+class _NextVolumeIntent extends Intent {
+  const _NextVolumeIntent();
+}
+
+class _PerfAction extends Action<Intent> {
+  _PerfAction(this.onInvoke);
+
+  final VoidCallback onInvoke;
+
+  @override
+  Object? invoke(Intent intent) {
+    onInvoke();
+    return null;
   }
 }
