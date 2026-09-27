@@ -79,8 +79,9 @@ class CorrectionResult {
   final List<String> warnings;
 }
 
-/// 纠错管线（纯逻辑，LLM 与文件系统可注入）：逐页把原图 + 当前切片 JSON
-/// 发给 LLM 对照校对，结构守卫 + 校验回喂（≤maxAttempts 次），本地 diff。
+/// 纠错管线（纯逻辑，LLM 与文件系统可注入）：盲重新识别模式——逐页把原图
+/// 独立识别一遍（不给当前谱 JSON，避免自我确认偏置），结构守卫 + 校验回喂
+/// （≤maxAttempts 次），本地 diffSlice 与当前谱比对产出修改候选。
 /// 原文档不被修改。
 class CorrectionPipeline {
   CorrectionPipeline({
@@ -149,7 +150,6 @@ class CorrectionPipeline {
       final sliceDoc = buildSliceDocument(doc, spec);
       final images = await _imageBase64(page.imagePath);
       final carryIn = _carryInJson(doc, spec);
-      final hint = _boundaryHint(doc, spec, slices);
 
       String? lastError;
       String? lastJson;
@@ -160,18 +160,14 @@ class CorrectionPipeline {
         onProgress?.call(progress);
         final sw = Stopwatch()..start();
         try {
-          debugPrint('[纠错] 第${page.pageIndex}页 第$attempt/$maxAttempts次开始'
+          debugPrint('[纠错] 第${page.pageIndex}页 第$attempt/$maxAttempts次盲识别开始'
               '${lastError == null ? '' : '（回喂：${_clip(lastError)}）'}');
           final raw = await gateway.completeJson(
             system: CorrectionPrompts.system(kind),
             user: CorrectionPrompts.user(
               pageIndex: page.pageIndex,
               kind: kind,
-              sliceJson: jsonEncode([
-                for (final m in sliceDoc.parts.first.measures) m.toJson(),
-              ]),
               carryInJson: carryIn,
-              boundaryHint: hint,
               repairFeedback: lastError == null ? null : [lastError],
               previousAttemptJson: lastJson,
             ),
@@ -183,9 +179,9 @@ class CorrectionPipeline {
           final fragment =
               PageFragment.fromJson(jsonDecode(lastJson) as Map<String, dynamic>);
 
-          // 结构守卫：小节数必须一致（页 ↔ 小节对应的根基）
+          // 结构守卫：盲识别小节数必须与当前切片一致（页 ↔ 小节对应的根基）
           if (fragment.measures.length != spec.measures.length) {
-            lastError = '必须输出与输入相同数量的小节'
+            lastError = '必须输出与该页曲谱相同数量的小节'
                 '（应为 ${spec.measures.length} 个，实际 ${fragment.measures.length} 个）';
             debugPrint('[纠错] 第${page.pageIndex}页 第$attempt次小节数不符');
             continue;
@@ -288,67 +284,6 @@ class CorrectionPipeline {
     final m = doc.parts.first.measures[first - 1];
     return jsonEncode(m.toJson());
   }
-
-  /// 跨页限制提示：列出每个 boundary 小节中不属于本页的事件区间。
-  String? _boundaryHint(
-    ScoreDocument doc,
-    PageSliceSpec spec,
-    List<PageSliceSpec> slices,
-  ) {
-    final restrictions = <BoundaryRestriction>[];
-    for (final ms in spec.measures) {
-      if (!ms.boundary) continue;
-      final m = doc.parts.first.measures[ms.measureIndex];
-      final descs = <String>[];
-      for (final v in m.voices) {
-        final key = '${v.staff}:${v.voiceNo}';
-        final ranges = ms.ownedRanges[key];
-        final n = v.events.length;
-        if (ranges == null) {
-          descs.add('$_voice(staff${v.staff}) 全部 $n 个事件');
-          continue;
-        }
-        final unowned = <int>[
-          for (var i = 0; i < n; i++)
-            if (!ranges.any((r) => i >= r.$1 && i < r.$2)) i,
-        ];
-        if (unowned.isEmpty) continue;
-        descs.add('$_voice(staff${v.staff}) '
-            '${_rangeText(unowned)}（共 ${unowned.length} 个）');
-      }
-      if (descs.isEmpty) continue;
-      // 本页所有权从 0 开始 → 尾部属于下一页；否则头部来自上一页
-      final ownsHead =
-          ms.ownedRanges.values.any((rs) => rs.any((r) => r.$1 == 0));
-      restrictions.add(BoundaryRestriction(
-        measureNumber: ms.measureIndex + 1,
-        tail: ownsHead,
-        descriptions: descs,
-      ));
-    }
-    if (restrictions.isEmpty) return null;
-    return CorrectionPrompts.boundaryHint(restrictions: restrictions);
-  }
-
-  static String _rangeText(List<int> indices) {
-    // 连续段压缩：[2,3,4,7] → "第2-4、7个"
-    final parts = <String>[];
-    var start = indices.first;
-    var prev = indices.first;
-    for (final i in indices.skip(1)) {
-      if (i == prev + 1) {
-        prev = i;
-        continue;
-      }
-      parts.add(start == prev ? '第${start + 1}个' : '第${start + 1}-${prev + 1}个');
-      start = prev = i;
-    }
-    parts.add(start == prev ? '第${start + 1}个' : '第${start + 1}-${prev + 1}个');
-    return parts.join('、');
-  }
-
-  static String _voice(int staff) =>
-      staff == 1 ? '右手' : staff == 2 ? '左手' : '谱表$staff';
 
   static ScoreDocument _probeDocument(
       String kind, ScoreMeta meta, PageFragment frag) {

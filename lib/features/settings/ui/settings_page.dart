@@ -22,7 +22,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   final _baseUrl = TextEditingController();
   final _model = TextEditingController();
   final _apiKey = TextEditingController();
+  // 纠错专用模型（可选，留空跟随制谱模型）
+  final _corrBaseUrl = TextEditingController();
+  final _corrModel = TextEditingController();
+  final _corrApiKey = TextEditingController();
+  bool _corrExpanded = false;
   bool _obscureKey = true;
+  bool _obscureCorrKey = true;
   bool _loaded = false;
 
   @override
@@ -30,22 +36,32 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _baseUrl.dispose();
     _model.dispose();
     _apiKey.dispose();
+    _corrBaseUrl.dispose();
+    _corrModel.dispose();
+    _corrApiKey.dispose();
     super.dispose();
   }
 
-  void _fillFrom(LlmConfig config) {
+  Future<void> _fillFrom(LlmConfig config) async {
     _baseUrl.text = config.baseUrl;
     _model.text = config.model;
     _apiKey.text = config.apiKey;
+    final corr = await loadCorrectionConfig();
+    if (corr != null) {
+      _corrBaseUrl.text = corr.baseUrl;
+      _corrModel.text = corr.model;
+      _corrApiKey.text = corr.apiKey;
+      _corrExpanded = true;
+    }
     _loaded = true;
   }
 
   @override
   Widget build(BuildContext context) {
     final configAsync = ref.watch(llmConfigProvider);
-    configAsync.whenData((c) {
-      if (!_loaded) _fillFrom(c);
-    });
+    if (configAsync.value != null && !_loaded) {
+      _fillFrom(configAsync.value!);
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -116,6 +132,72 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               ),
             ),
             const SizedBox(height: 24),
+            Theme(
+              data: Theme.of(context)
+                  .copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                initiallyExpanded: _corrExpanded,
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: EdgeInsets.zero,
+                title: Text('纠错专用模型（可选）',
+                    style: Theme.of(context).textTheme.titleMedium),
+                subtitle: Text(
+                  '留空跟随制谱模型；可填更强的视觉模型提升 AI 纠错准确率',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      for (final entry in _presets.entries)
+                        ActionChip(
+                          label: Text(entry.key),
+                          onPressed: () {
+                            setState(() {
+                              _corrBaseUrl.text = entry.value.$1;
+                              _corrModel.text = entry.value.$2;
+                            });
+                          },
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _corrBaseUrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Base URL',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _corrModel,
+                    decoration: const InputDecoration(
+                      labelText: '模型名称',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _corrApiKey,
+                    obscureText: _obscureCorrKey,
+                    decoration: InputDecoration(
+                      labelText: 'API Key',
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        icon: Icon(_obscureCorrKey
+                            ? Icons.visibility_off
+                            : Icons.visibility),
+                        onPressed: () =>
+                            setState(() => _obscureCorrKey = !_obscureCorrKey),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: _save,
               icon: const Icon(Icons.save_outlined),
@@ -135,6 +217,19 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       model: _model.text.trim(),
       apiKey: _apiKey.text.trim(),
     ));
+    // 纠错模型三件套任一非空才视为配置
+    final corrBase = _corrBaseUrl.text.trim();
+    final corrModel = _corrModel.text.trim();
+    final corrKey = _corrApiKey.text.trim();
+    await saveCorrectionConfig(
+      (corrBase.isEmpty && corrModel.isEmpty && corrKey.isEmpty)
+          ? null
+          : LlmConfig(
+              baseUrl: corrBase,
+              model: corrModel,
+              apiKey: corrKey,
+            ),
+    );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('已保存')),

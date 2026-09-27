@@ -14,8 +14,7 @@ import 'package:ejmusic/features/correction/logic/correction_controller.dart';
 import 'package:ejmusic/features/correction/logic/correction_pipeline.dart';
 import 'package:ejmusic/features/generation/logic/generation_controller.dart'
     show scoreStoreProvider;
-import 'package:ejmusic/features/generation/logic/generation_pipeline.dart'
-    show PageInput;
+
 import 'package:ejmusic/features/library/library_providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -140,11 +139,11 @@ void main() {
   ProviderContainer makeContainer(FakeGateway gateway) {
     return ProviderContainer(overrides: [
       appDatabaseProvider.overrideWithValue(db),
-      correctionPipelineProvider.overrideWithValue(CorrectionPipeline(
-        gateway: gateway,
-        readImage: (_) async => Uint8List.fromList([1, 2, 3]),
-        compress: (b) => b,
-      )),
+      correctionPipelineProvider.overrideWith((ref) async => CorrectionPipeline(
+            gateway: gateway,
+            readImage: (_) async => Uint8List.fromList([1, 2, 3]),
+            compress: (b) => b,
+          )),
       scoreStoreProvider.overrideWith((ref) async => ScoreStore(tempDir.path)),
       songsStreamProvider.overrideWith((ref) => const Stream.empty()),
     ]);

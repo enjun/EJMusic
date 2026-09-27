@@ -825,7 +825,8 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         songId: widget.songId,
         baseDoc: doc,
       );
-      final result = await ref.read(correctionPipelineProvider).run(
+      final pipeline = await ref.read(correctionPipelineProvider.future);
+      final result = await pipeline.run(
             kind: session.kind,
             doc: session.doc,
             slices: session.slices,

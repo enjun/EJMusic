@@ -129,7 +129,7 @@ class _CorrectionPageState extends ConsumerState<CorrectionPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('正在逐页对照原图校对…',
+              Text('正在逐页盲识别原图并与当前曲谱比对…',
                   style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               LinearProgressIndicator(
@@ -165,7 +165,7 @@ class _CorrectionPageState extends ConsumerState<CorrectionPage> {
         ),
       'unchanged' => (Icons.check_circle_outline, Colors.grey, '无修改'),
       'failed' => (Icons.error, Colors.red, p.error ?? '失败'),
-      'running' => (Icons.sync, Colors.blue, '第${p.attempts}次校对中…'),
+      'running' => (Icons.sync, Colors.blue, '第${p.attempts}次盲识别中…'),
       _ => (Icons.schedule, Colors.grey, '等待中'),
     };
     return ListTile(

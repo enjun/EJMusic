@@ -212,7 +212,7 @@ void main() {
     expect(result.warnings, isEmpty);
   });
 
-  test('切片请求携带原图与切片 JSON，carry-in 上下文注入', () async {
+  test('盲识别请求不携带当前谱 JSON，carry-in 上下文注入', () async {
     final doc = _doc();
     doc.parts.first.measures.insert(
       0,
@@ -236,7 +236,9 @@ void main() {
       slices: [spec],
       pages: [PageInput(pageIndex: 1, imagePath: '/1.jpg')],
     );
-    expect(gateway.users.single, contains('仅供上下文参考'));
+    expect(gateway.users.single, contains('上一页最后的小节 JSON'));
     expect(gateway.users.single, contains('"number":1'));
+    // 盲识别核心约束：当前切片内容绝不能出现在请求里
+    expect(gateway.users.single, isNot(contains('"number":2')));
   });
 }

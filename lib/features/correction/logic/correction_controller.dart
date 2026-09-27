@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/config/app_settings.dart' show appDatabaseProvider;
+import '../../../core/config/app_settings.dart'
+    show appDatabaseProvider, loadCorrectionConfig;
+import '../../../data/llm/llm_client.dart' show DioLlmClient;
 import '../../../core/db/database.dart';
 import '../../../data/score/score_store.dart';
 import '../../../domain/score/correct/score_diff.dart';
@@ -14,9 +16,14 @@ import '../../generation/logic/generation_pipeline.dart' show PageInput;
 import '../../library/library_providers.dart';
 import 'correction_pipeline.dart';
 
-/// 纠错管线（测试可 override：注入 fake gateway / 图片读取）。
-final correctionPipelineProvider = Provider<CorrectionPipeline>((ref) {
-  return CorrectionPipeline(gateway: ref.read(llmGatewayProvider));
+/// 纠错管线（异步：纠错专用模型配置非空时用独立网关，否则跟随制谱模型；
+/// 测试可 override 为 FutureProvider.value 注入 fake gateway / 图片读取）。
+final correctionPipelineProvider = FutureProvider<CorrectionPipeline>((ref) async {
+  final corrConfig = await loadCorrectionConfig();
+  final gateway = corrConfig != null
+      ? DioLlmClient(loadConfig: () => corrConfig)
+      : ref.read(llmGatewayProvider);
+  return CorrectionPipeline(gateway: gateway);
 });
 
 /// 一次纠错会话的准备数据（详情页与编辑器入口共用）。
@@ -159,7 +166,7 @@ class CorrectionController extends Notifier<CorrectionState> {
         error: null,
         resultMessage: null,
       );
-      final pipeline = ref.read(correctionPipelineProvider);
+      final pipeline = await ref.read(correctionPipelineProvider.future);
       final result = await pipeline.run(
         kind: session.kind,
         doc: session.doc,
@@ -199,7 +206,8 @@ class CorrectionController extends Notifier<CorrectionState> {
       p.error = null;
     });
     try {
-      final outcome = await ref.read(correctionPipelineProvider).runPage(
+      final outcome = await (await ref.read(correctionPipelineProvider.future))
+          .runPage(
             kind: session.kind,
             doc: session.doc,
             slices: session.slices,

@@ -12,6 +12,8 @@ String changeKindLabel(ScoreChangeKind kind) => switch (kind) {
     };
 
 /// 改动确认清单：详情页纠错页与编辑器 bottom sheet 共用。
+/// 按小节聚合展示（盲识别差异量大，事件级平铺无法人工把关）：
+/// 每个小节一个可展开分组，组勾选框一键采纳/跳过整小节改动。
 /// [onToggle] 为 null 时只读展示。
 class ChangeReviewList extends StatelessWidget {
   const ChangeReviewList({
@@ -30,6 +32,12 @@ class ChangeReviewList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final selectedCount = changes.where((c) => c.selected).length;
+    // 按小节聚合（保持出现顺序）
+    final groups = <int, List<int>>{};
+    for (var i = 0; i < changes.length; i++) {
+      groups.putIfAbsent(changes[i].measureIndex, () => []).add(i);
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -74,31 +82,64 @@ class ChangeReviewList extends StatelessWidget {
           child: changes.isEmpty
               ? const Center(child: Text('没有发现需要修改的地方'))
               : ListView.builder(
-                  itemCount: changes.length,
-                  itemBuilder: (context, i) {
-                    final c = changes[i];
-                    return CheckboxListTile(
-                      value: c.selected,
-                      onChanged:
-                          onToggle == null ? null : (_) => onToggle!(i),
-                      controlAffinity: ListTileControlAffinity.leading,
-                      dense: true,
-                      title: Text(c.description,
-                          style: const TextStyle(fontSize: 13)),
-                      subtitle: c.before.isEmpty
+                  itemCount: groups.length,
+                  itemBuilder: (context, gi) {
+                    final measureIndex = groups.keys.elementAt(gi);
+                    final indices = groups[measureIndex]!;
+                    final first = changes[indices.first];
+                    final allSelected = indices.every(
+                        (i) => changes[i].selected);
+                    final summary = indices
+                        .map((i) => changes[i])
+                        .map((c) =>
+                            '${c.before.isEmpty ? '' : '${c.before} → '}${c.after.isEmpty ? c.before : c.after}')
+                        .join('；');
+                    return ExpansionTile(
+                      initiallyExpanded: indices.length <= 3,
+                      childrenPadding:
+                          const EdgeInsets.symmetric(horizontal: 8),
+                      title: Text('第 ${first.measureNumber} 小节'
+                          '（${indices.length} 处）',
+                          style: const TextStyle(fontSize: 14)),
+                      subtitle: Text(summary,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: Theme.of(context).hintColor)),
+                      leading: onToggle == null
                           ? null
-                          : Text(
-                              '${c.before}${c.after.isEmpty ? '' : '  →  ${c.after}'}',
+                          : Checkbox(
+                              value: allSelected,
+                              onChanged: (_) {
+                                // 全选中 → 整组取消；否则整组勾选
+                                for (final i in indices) {
+                                  if (changes[i].selected == allSelected) {
+                                    onToggle!(i);
+                                  }
+                                }
+                              },
+                            ),
+                      children: [
+                        for (final i in indices)
+                          CheckboxListTile(
+                            value: changes[i].selected,
+                            onChanged:
+                                onToggle == null ? null : (_) => onToggle!(i),
+                            controlAffinity: ListTileControlAffinity.leading,
+                            dense: true,
+                            title: Text(changeKindLabel(changes[i].kind),
+                                style: const TextStyle(fontSize: 12)),
+                            subtitle: Text(
+                              '${changes[i].before.isEmpty ? '' : '${changes[i].before}  →  '}${changes[i].after}',
                               style: TextStyle(
                                   fontSize: 11,
                                   color: Theme.of(context).hintColor),
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                             ),
-                      secondary: Text(changeKindLabel(c.kind),
-                          style: TextStyle(
-                              fontSize: 11,
-                              color: Theme.of(context).hintColor)),
+                          ),
+                      ],
                     );
                   },
                 ),
