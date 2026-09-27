@@ -392,46 +392,47 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     );
     setState(() {}); // 选中项就地变化，状态条立即刷新
     _afterChange();
-    _revealEvent(loc.$3, loc.$1.staff - 1, loc.$2, null);
+    // 不在旧谱面上立即定位（原因同 _insertEventAt）；
+    // 防抖重渲染后 _restoreHighlight 一次性恢复高亮
   }
 
-  /// 在选中事件之后插入 [e]（无选中则追加到末尾），并滚动定位让用户看见。
+  /// 在选中事件之后插入 [e]（无选中则追加到末尾）。
+  ///
+  /// 注意：这里绝不能在旧谱面上立即定位光标——插入后事件序号已偏移，
+  /// 高亮会先跳到别的音符、渲染后再跳回来，看起来"高亮到处跳"。
+  /// 只提示文字，防抖重渲染完成后 _restoreHighlight 一次性把蓝选中 +
+  /// 绿光标落到新音符上（DOM 未变期间光标停在原处，视觉稳定）。
   void _insertEventAt(ScoreEvent e, {bool feedback = true}) {
     final doc = _doc;
     if (doc == null) return;
     final sel = _selected;
     final loc = sel == null ? null : _locate(sel);
     final int measureIndex;
-    final int staff0;
-    final int eventIndex;
     if (loc != null) {
       loc.$1.events.insert(loc.$2 + 1, e);
       measureIndex = loc.$3;
-      staff0 = loc.$1.staff - 1;
-      eventIndex = loc.$2 + 1;
       debugPrint(
         'EJM editor: 插入 ${eventLabel(e)} 于 m=$measureIndex '
-        'staff=${loc.$1.staff} index=$eventIndex',
+        'staff=${loc.$1.staff} index=${loc.$2 + 1}',
       );
     } else {
       final measures = doc.parts.first.measures;
       measures.last.voices.last.events.add(e);
       measureIndex = measures.length - 1;
-      staff0 = measures.last.voices.last.staff - 1;
-      eventIndex = measures.last.voices.last.events.length - 1;
       debugPrint('EJM editor: 无选中，${eventLabel(e)} 追加到末尾 m=$measureIndex');
     }
     setState(() => _selected = e);
     _afterChange();
-    // 必须让用户看见插入结果：光标直接落到新事件并滚动可见
-    // （feedback 时再提示位置）。防抖重渲染完成后 _restoreHighlight
-    // 会再次精确恢复蓝选中与绿光标。
-    _revealEvent(
-      measureIndex,
-      staff0,
-      eventIndex,
-      feedback ? '已在第 ${measureIndex + 1} 小节插入${eventLabel(e)}' : null,
-    );
+    if (feedback && mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('已在第 ${measureIndex + 1} 小节插入${eventLabel(e)}'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+    }
   }
 
   /// 选中高亮 + 绿光标落到指定事件，并滚动使其可见；[message] 非空时提示。

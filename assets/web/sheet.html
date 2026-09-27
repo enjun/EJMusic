@@ -197,7 +197,19 @@
     try {
       var el = osmd.cursor && osmd.cursor.cursorElement;
       if (el && el.style) el.style.pointerEvents = 'none';
-    } catch (e) { /* 光标未创建时忽略 */ }
+    } catch (e) { /* 光标未创建时忽略 */
+    }
+  }
+
+  // 渲染后 cursor.show() 总把光标放回曲首；编辑重渲染时先把光标藏起，
+  // 等调用方（编辑器的高亮恢复）重新定位后再显示——否则光标会先闪到
+  // 曲首再跳回来，看起来就是"高亮到处跳"
+  function cursorVisible(v) {
+    try {
+      var el = osmd.cursor && osmd.cursor.cursorElement;
+      if (el && el.style) el.style.visibility = v ? 'visible' : 'hidden';
+    } catch (e) { /* 光标未创建时忽略 */
+    }
   }
 
   function onSheetClick(ev) {
@@ -275,6 +287,8 @@
       osmd.render();
       osmd.cursor.show();
       cursorClickThrough();
+      // 光标此刻被放回曲首；藏起，等高亮恢复/光标定位后再显示
+      cursorVisible(false);
       invalidateEntries();
       var map = await buildStepsMap();
       stepsMap = map.steps;
@@ -299,6 +313,7 @@
       i++;
     }
     window.scrollTo(sx, sy);
+    cursorVisible(true);
     if (!scroll) {
       cursorClickThrough();
       return;
@@ -351,6 +366,7 @@
           case 'cursorReset':
             if (osmd) {
               osmd.cursor.reset();
+              cursorVisible(true);
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }
             break;
@@ -361,6 +377,7 @@
               osmd.zoom = zoom;
               osmd.render();
               osmd.cursor.show();
+              cursorVisible(true);
               invalidateEntries();
               window.scrollTo(0, sy);
             }
