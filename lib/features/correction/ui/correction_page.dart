@@ -136,7 +136,7 @@ class _CorrectionPageState extends ConsumerState<CorrectionPage> {
                 value: state.pages.isEmpty ? null : done / state.pages.length,
               ),
               const SizedBox(height: 4),
-              Text('${done} / ${state.pages.length} 页',
+              Text('$done / ${state.pages.length} 页',
                   style: TextStyle(
                       fontSize: 12, color: Theme.of(context).hintColor)),
             ],

@@ -1,6 +1,11 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:ejmusic/core/config/app_settings.dart';
 import 'package:ejmusic/data/llm/llm_client.dart';
 import 'package:ejmusic/domain/score/merge/page_merger.dart';
+import 'package:ejmusic/domain/score/score_document.dart'
+    show PageFragment, ScoreDocument;
 import 'package:ejmusic/features/correction/logic/correction_pipeline.dart';
 import 'package:ejmusic/features/correction/ui/change_review_list.dart'
     show changeKindLabel;
@@ -29,6 +34,14 @@ void main() {
     expect(config.isConfigured, isTrue, reason: '本机需先在应用里配置好 LLM');
 
     final gateway = DioLlmClient(loadConfig: () => config);
+    // 纠错走「纠错专用模型」配置（与 correctionPipelineProvider 同语义），留空则跟随制谱模型
+    final corrConfig = await loadCorrectionConfig();
+    // ignore: avoid_print
+    print('纠错模型: ${corrConfig == null ? '跟随制谱模型(${config.model})' : corrConfig.model} '
+        'baseUrl=${corrConfig?.baseUrl ?? config.baseUrl} '
+        'key=${corrConfig == null ? '同制谱' : '${corrConfig.apiKey.length}字符'}');
+    final corrGateway =
+        corrConfig != null ? DioLlmClient(loadConfig: () => corrConfig) : gateway;
     final images = [
       r'K:\曲谱图片\A小调华尔兹\A小调华尔兹-1.jpg',
       r'K:\曲谱图片\A小调华尔兹\A小调华尔兹-2.jpg',
@@ -38,22 +51,50 @@ void main() {
       PageInput(pageIndex: 2, imagePath: images[1]),
     ];
 
-    // 第 1 步：真实制谱（盲识别的对照基准 = 真实图片内容）
-    final gen = GenerationPipeline(gateway: gateway);
-    final genResult = await gen.run(kind: 'piano', pages: pages);
-    expect(genResult.document, isNotNull, reason: '制谱须成功才能纠错');
-    final doc = genResult.document!;
+    // 第 1 步：真实制谱（盲识别的对照基准 = 真实图片内容）。
+    // 制谱结果缓存到系统临时目录：重跑免重复计费，也避开制谱模型抖动
+    // （glm-5.3-flash 偶发连续 3 次 measure_overfull，会拖垮整个实验）。
+    // 只在全部页都成功时写缓存，避免缓存半成品。
+    final cacheFile = File(
+        '${Directory.systemTemp.path}/ejmusic_correction_real_gen_cache.json');
+    final cachedJson =
+        cacheFile.existsSync() ? cacheFile.readAsStringSync() : '';
+    final ScoreDocument doc;
+    final List<PageSliceSpec> slices;
+    if (cachedJson.isNotEmpty) {
+      final cached = jsonDecode(cachedJson) as Map<String, dynamic>;
+      final merged = PageMerger.merge(
+        fragments: [
+          for (final f in cached['fragments'] as List)
+            PageFragment.fromJson(f as Map<String, dynamic>),
+        ],
+        kind: 'piano',
+      );
+      doc = merged.document;
+      slices = merged.slices;
+      // ignore: avoid_print
+      print('制谱缓存命中：${doc.parts.first.measures.length} 小节');
+    } else {
+      final gen = GenerationPipeline(gateway: gateway);
+      final genResult = await gen.run(kind: 'piano', pages: pages);
+      expect(genResult.document, isNotNull, reason: '制谱须成功才能纠错');
+      final frags = [
+        for (final p in genResult.pages)
+          if (p.ok && p.fragment != null) p.fragment!,
+      ];
+      expect(frags.length, pages.length,
+          reason: '所有页制谱成功才能继续（失败页会让切片/注入失真）');
+      cacheFile.writeAsStringSync(jsonEncode({
+        'images': images,
+        'fragments': [for (final f in frags) f.toJson()],
+      }));
+      final merged = PageMerger.merge(fragments: frags, kind: 'piano');
+      doc = merged.document;
+      slices = merged.slices;
+      // ignore: avoid_print
+      print('制谱完成：${doc.parts.first.measures.length} 小节（已缓存）');
+    }
     final measures = doc.parts.first.measures;
-    // ignore: avoid_print
-    print('制谱完成：${measures.length} 小节');
-
-    // 成功片段重合并出页所有权规格（同 prepareCorrection 语义）
-    final frags = [
-      for (final p in genResult.pages)
-        if (p.ok && p.fragment != null) p.fragment!,
-    ];
-    final merged = PageMerger.merge(fragments: frags, kind: 'piano');
-    final slices = merged.slices;
     final boundaryIdx = <int>{
       for (final s in slices)
         for (final ms in s.measures)
@@ -107,7 +148,7 @@ void main() {
     }
 
     // 第 3 步：盲识别纠错（对照原图，注入处应被还原）
-    final correction = CorrectionPipeline(gateway: gateway);
+    final correction = CorrectionPipeline(gateway: corrGateway);
     final sw = Stopwatch()..start();
     final result = await correction.run(
       kind: 'piano',

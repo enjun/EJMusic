@@ -78,6 +78,8 @@ void main() {
     final body = req['body'] as Map<String, dynamic>;
     expect(body['model'], 'qwen-vl-max');
     expect(body['temperature'], 0.1);
+    // 不传时网关默认上限常仅 4k，整页识别会被截断/正文为空
+    expect(body['max_tokens'], greaterThanOrEqualTo(16384));
     expect((body['response_format'] as Map)['type'], 'json_object');
     final messages = body['messages'] as List;
     expect(messages[0]['role'], 'system');

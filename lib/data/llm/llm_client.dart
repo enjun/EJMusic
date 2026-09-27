@@ -98,6 +98,10 @@ class DioLlmClient implements LlmGateway {
       body = {
         'model': config.model,
         'temperature': 0.1,
+        // 必须显式传：不传时多数网关默认上限仅 4k completion tokens，
+        // 推理型模型的思考也计入其中——整页识别会被截断甚至正文为空
+        // （实测 agnes-2.5-pro 默认 4096，思考耗尽后 content 返回空串）
+        'max_tokens': 32768,
         'response_format': {'type': 'json_object'},
         'messages': [
           {'role': 'system', 'content': system},
