@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import 'core/config/app_settings.dart';
 import 'features/convert/ui/convert_page.dart';
+import 'features/correction/ui/correction_page.dart';
 import 'features/editor/ui/editor_page.dart';
 import 'features/generation/ui/generation_page.dart';
 import 'features/import/ui/import_page.dart';
@@ -79,6 +80,16 @@ final appRouter = GoRouter(
           return const Scaffold(body: Center(child: Text('无效的曲目 ID')));
         }
         return ConvertPage(songId: id);
+      },
+    ),
+    GoRoute(
+      path: '/song/:id/correct',
+      builder: (context, state) {
+        final id = int.tryParse(state.pathParameters['id'] ?? '');
+        if (id == null) {
+          return const Scaffold(body: Center(child: Text('无效的曲目 ID')));
+        }
+        return CorrectionPage(songId: id);
       },
     ),
     GoRoute(

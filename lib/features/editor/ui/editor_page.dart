@@ -11,7 +11,10 @@ import '../../../core/platform/ime_control.dart';
 import '../../../core/util/rational.dart';
 import '../../../data/render/sheet_webview.dart';
 import '../../../domain/score/convert/to_musicxml.dart';
+import '../../../domain/score/correct/score_diff.dart';
 import '../../../domain/score/score_document.dart';
+import '../../correction/logic/correction_controller.dart';
+import '../../correction/ui/change_review_list.dart';
 import '../../generation/logic/generation_controller.dart';
 import '../../library/library_providers.dart';
 import '../logic/score_editor.dart';
@@ -781,8 +784,137 @@ class _EditorPageState extends ConsumerState<EditorPage> {
           icon: const Icon(Icons.delete_outline, size: 18),
           label: const Text('删除', style: TextStyle(fontSize: 12)),
         ),
+        OutlinedButton.icon(
+          onPressed: _doc == null ? null : _runAiCorrection,
+          icon: const Icon(Icons.auto_fix_high, size: 18),
+          label: const Text('AI 纠错', style: TextStyle(fontSize: 12)),
+        ),
       ],
     );
+  }
+
+  /// AI 纠错：对照原图校对当前谱面（未保存的手动改动参与），
+  /// 弹出修改清单确认后应用到 _doc（标脏 + 重渲染，走"保存"持久化）。
+  Future<void> _runAiCorrection() async {
+    final doc = _doc;
+    if (doc == null) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Dialog(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('正在对照原图逐页校对…'),
+            ],
+          ),
+        ),
+      ),
+    );
+    List<ScoreChange> changes;
+    List<String> warnings;
+    try {
+      final store = await ref.read(scoreStoreProvider.future);
+      final session = await prepareCorrection(
+        store: store,
+        db: ref.read(appDatabaseProvider),
+        songId: widget.songId,
+        baseDoc: doc,
+      );
+      final result = await ref.read(correctionPipelineProvider).run(
+            kind: session.kind,
+            doc: session.doc,
+            slices: session.slices,
+            pages: session.pages,
+          );
+      changes = result.changes;
+      warnings = [
+        for (final o in result.pages)
+          for (final w in o.warnings) '第${o.pageIndex}页 $w',
+      ];
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.of(context).pop(); // 关进度对话框
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('纠错失败：$e')));
+      return;
+    }
+    if (!mounted) return;
+    Navigator.of(context).pop(); // 关进度对话框
+    if (changes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(warnings.isEmpty
+            ? 'AI 校对完成：未发现需要修改的地方'
+            : 'AI 校对完成：无修改（${warnings.length} 条告警，详见控制台）'),
+      ));
+      return;
+    }
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        var list = [...changes];
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SizedBox(
+              height: MediaQuery.of(sheetContext).size.height * 0.75,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text('AI 对照原图发现以下修改，确认后应用到当前谱面：',
+                          style: Theme.of(context).textTheme.titleSmall),
+                    ),
+                  ),
+                  Expanded(
+                    child: ChangeReviewList(
+                      changes: list,
+                      warnings: warnings,
+                      onToggle: (i) =>
+                          setSheetState(() => list[i].selected = !list[i].selected),
+                      onSetAll: (v) => setSheetState(() {
+                        for (final c in list) {
+                          c.selected = v;
+                        }
+                      }),
+                    ),
+                  ),
+                  SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          icon: const Icon(Icons.check, size: 18),
+                          label: Text(
+                              '应用选中（${list.where((c) => c.selected).length} 处）'),
+                          onPressed: list.any((c) => c.selected)
+                              ? () => Navigator.of(sheetContext).pop(true)
+                              : null,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+    final selected = changes.where((c) => c.selected).toList();
+    if (selected.isEmpty || !mounted) return;
+    applyChanges(_doc!, selected);
+    setState(() => _selected = null);
+    _afterChange();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('已应用 ${selected.length} 处修改，请检查后保存')));
   }
 
   Future<void> _adjustZoom(double delta) async {

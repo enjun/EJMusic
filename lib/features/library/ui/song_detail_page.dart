@@ -172,6 +172,16 @@ class SongDetailPage extends ConsumerWidget {
                     : null,
               ),
             ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.auto_fix_high),
+                label: const Text('AI 纠错'),
+                onPressed: hasScore
+                    ? () => context.push('/song/$songId/correct')
+                    : null,
+              ),
+            ),
           ],
         ),
       ],

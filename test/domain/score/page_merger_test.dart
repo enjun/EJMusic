@@ -143,7 +143,107 @@ void main() {
     expect(doc.parts.first.staffCount, 1);
     expect(doc.parts.first.instrument, 'guitar');
   });
+
+  test('slices：单页无 cont → 每个小节归该页整体所有', () {
+    final p1 = PageFragment(page: 1, title: 'T', measures: [
+      _measure(1, [_voice(1, [_note(const Rational(4, 1), 'C', 4)])]),
+      _measure(2, [_voice(1, [_note(const Rational(4, 1), 'D', 4)])]),
+    ]);
+    final result = PageMerger.merge(fragments: [p1], kind: 'piano');
+    expect(result.slices.length, 1);
+    final spec = result.slices.single;
+    expect(spec.page, 1);
+    expect([for (final m in spec.measures) m.measureIndex], [0, 1]);
+    expect(spec.measures.every((m) => !m.boundary), isTrue);
+  });
+
+  test('slices：第 2 页 cont → 跨页小节按事件区间分权', () {
+    final p1 = PageFragment(page: 1, title: 'T', measures: [
+      _measure(1, [
+        _voice(1, [_note(const Rational(4, 1), 'C', 4)]),
+        _voice(2, [_rest(const Rational(4, 1))]),
+      ]),
+      _measure(2, [
+        _voice(1, [_note(const Rational(2, 1), 'G', 4)]),
+        _voice(2, [_rest(const Rational(2, 1))]),
+      ]),
+    ]);
+    final p2 = PageFragment(page: 2, measures: [
+      ScoreMeasure(
+        number: 2,
+        cont: true,
+        voices: [
+          _voice(1, [_note(const Rational(2, 1), 'A', 4)]),
+          _voice(2, [_rest(const Rational(2, 1))]),
+        ],
+      ),
+      _measure(3, [_voice(1, [_note(const Rational(4, 1), 'B', 4)])]),
+    ]);
+    final result = PageMerger.merge(fragments: [p1, p2], kind: 'piano');
+    final s1 = result.slices.firstWhere((s) => s.page == 1);
+    final s2 = result.slices.firstWhere((s) => s.page == 2);
+
+    // 跨页小节 = 合并后下标 1（第 1 页的第 2 个小节被第 2 页承接）
+    final m1s1 = s1.specFor(1)!;
+    expect(m1s1.boundary, isTrue);
+    expect(m1s1.ownedRanges['1:1'], [(0, 1)]);
+    expect(m1s1.ownedRanges['2:1'], [(0, 1)]);
+    expect(m1s1.owns('1:1', 0), isTrue);
+    expect(m1s1.owns('1:1', 1), isFalse);
+    expect(s1.specFor(0)!.boundary, isFalse);
+
+    // 第 2 页：小节 1 的尾部区间 + 小节 2 整体
+    final m1s2 = s2.specFor(1)!;
+    expect(m1s2.boundary, isTrue);
+    expect(m1s2.ownedRanges['1:1'], [(1, 2)]);
+    expect(m1s2.ownedRanges['2:1'], [(1, 2)]);
+    expect(m1s2.owns('1:1', 0), isFalse);
+    expect(m1s2.owns('1:1', 1), isTrue);
+    expect(s2.specFor(2)!.boundary, isFalse);
+  });
+
+  test('slices：链式 cont 区间不重叠', () {
+    final p1 = PageFragment(page: 1, title: 'T', measures: [
+      _measure(1, [_voice(1, [_note(const Rational(2, 1), 'C', 4)])]),
+    ]);
+    final p2 = PageFragment(page: 2, measures: [
+      ScoreMeasure(number: 1, cont: true, voices: [
+        _voice(1, [_note(const Rational(1, 1), 'D', 4)]),
+      ]),
+    ]);
+    final p3 = PageFragment(page: 3, measures: [
+      ScoreMeasure(number: 1, cont: true, voices: [
+        _voice(1, [_note(const Rational(1, 1), 'E', 4)]),
+      ]),
+    ]);
+    final result = PageMerger.merge(fragments: [p1, p2, p3], kind: 'piano');
+    expect(result.document.parts.first.measures.length, 1);
+    final s1 = result.slices.firstWhere((s) => s.page == 1).specFor(0)!;
+    final s2 = result.slices.firstWhere((s) => s.page == 2).specFor(0)!;
+    final s3 = result.slices.firstWhere((s) => s.page == 3).specFor(0)!;
+    expect(s1.ownedRanges['1:1'], [(0, 1)]);
+    expect(s2.ownedRanges['1:1'], [(1, 2)]);
+    expect(s3.ownedRanges['1:1'], [(2, 3)]);
+  });
+
+  test('slices：cont 新 voice 整体归承接页', () {
+    final p1 = PageFragment(page: 1, title: 'T', measures: [
+      _measure(1, [_voice(1, [_note(const Rational(2, 1), 'C', 4)])]),
+    ]);
+    final p2 = PageFragment(page: 2, measures: [
+      ScoreMeasure(number: 1, cont: true, voices: [
+        _voice(2, [_rest(const Rational(2, 1))]), // 前一小节没有 staff2
+      ]),
+    ]);
+    final result = PageMerger.merge(fragments: [p1, p2], kind: 'piano');
+    final s1 = result.slices.firstWhere((s) => s.page == 1).specFor(0)!;
+    final s2 = result.slices.firstWhere((s) => s.page == 2).specFor(0)!;
+    expect(s1.ownedRanges.containsKey('2:1'), isFalse,
+        reason: 'staff2 不属于第 1 页');
+    expect(s2.ownedRanges['2:1'], [(0, 1)]);
+  });
 }
+
 
 ScoreMeasure _measure(int number, List<ScoreVoice> voices) =>
     ScoreMeasure(number: number, voices: voices);
