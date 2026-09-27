@@ -28,13 +28,22 @@ void main() {
         var glyphs = document.querySelectorAll(
           '[class*="vf-notehead"],[class*="vf-rest"]');
         var sel = null;
+        var anyFill = '';
         for (var i = 0; i < glyphs.length; i++) {
-          if (glyphs[i].style && glyphs[i].style.fill === 'rgb(26, 115, 232)') {
+          if (glyphs[i].style && glyphs[i].style.fill) {
+            anyFill += i + ':' + glyphs[i].style.fill + ' ';
+          }
+          if (!sel && glyphs[i].style
+              && glyphs[i].style.fill === 'rgb(26, 115, 232)') {
             sel = glyphs[i];
-            break;
           }
         }
-        if (!sel) return JSON.stringify({err: 'no-blue'});
+        if (!sel) {
+          return JSON.stringify({err: 'no-blue', glyphs: glyphs.length,
+            anyFill: anyFill, hl: window.__ejmLastHighlight || null,
+            inv: window.__ejmInvCount || 0,
+            svgCount: document.querySelectorAll('#container svg').length});
+        }
         var imgs = document.querySelectorAll('#container img');
         if (!imgs.length) return JSON.stringify({err: 'no-cursor'});
         var r1 = sel.getBoundingClientRect();

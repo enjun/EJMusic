@@ -89,11 +89,11 @@
   var container = document.getElementById('container');
 
   function invalidateEntries() {
+    window.__ejmInvCount = (window.__ejmInvCount || 0) + 1;
     __entriesCache = null;
-    if (__selEls) {
-      for (var i = 0; i < __selEls.length; i++) __selEls[i].style.fill = '';
-      __selEls = null;
-    }
+    // 注意：这里只作废坐标缓存，不清蓝选中的填充色——resize 防抖触发的
+    // 失效没有重渲染，元素还活着，清掉会让高亮"自己消失"（DOM 被替换
+    // 的场景旧元素已是死引用，清不清都无所谓）
   }
 
   function collectEntries() {
@@ -151,11 +151,14 @@
     return out;
   }
 
+  var __lastSel = null;
+
   function setSelection(g) {
     if (__selEls && __selEls !== g.els) {
       for (var i = 0; i < __selEls.length; i++) __selEls[i].style.fill = '';
     }
     __selEls = g.els;
+    __lastSel = { m: g.m, s: g.s, k: g.k };
     for (var j = 0; j < g.els.length; j++) g.els[j].style.fill = '#1a73e8';
   }
 
@@ -176,23 +179,12 @@
     } catch (e) { /* 光标尚未创建时忽略 */ }
   }
 
-  // 事件对应的 cursor 步号：优先小节+onset 精确匹配，退回该小节首步
-  function stepForEntry(entry) {
-    var first = null;
-    for (var i = 0; i < stepsMap.length; i++) {
-      var st = stepsMap[i];
-      if (st.m !== entry.m) continue;
-      if (first === null) first = st.step;
-      if (entry.q >= 0 && Math.abs(st.quarter - entry.q) < 1e-6) return st.step;
-    }
-    return first;
-  }
-
-  // 蓝选中 + 绿光标一起落到事件上；reveal 时滚动到光标可见
+  // 蓝选中 + 绿光标一起落到事件上；reveal 时滚动到光标可见。
+  // 纯 delta 定位（O(1)）：走光标到步号再校正要同步走几百步（长谱
+  // 数百 ms），而光标 img 的位置完全由 delta 决定，无需先走步号。
   function positionCursorAt(entry, reveal) {
     if (!osmd || !osmd.cursor) return;
-    var step = stepForEntry(entry);
-    if (step !== null) cursorTo(step, false);
+    cursorVisible(true);
     nudgeCursorTo(entry);
     if (reveal) {
       try {
@@ -276,6 +268,42 @@
            gi: window.__ejmLastClick.gi });
   }
 
+  // autoResize（窗口/容器尺寸变化触发的 OSMD 内部重渲染）不走 load/setZoom：
+  // DOM 被整个重建，蓝选中与光标静默丢失且无人恢复。包一层 osmd.render，
+  // 任何重渲染完成后锁滚动、作废缓存，并按最后选中自动恢复蓝选中+光标。
+  var __inPatchedRender = false;
+
+  function patchRender() {
+    var orig = osmd.render.bind(osmd);
+    osmd.render = function () {
+      if (__inPatchedRender) return orig();
+      __inPatchedRender = true;
+      try {
+        var sx = window.scrollX, sy = window.scrollY;
+        var r = orig();
+        window.scrollTo(sx, sy);
+        osmd.cursor.show();
+        cursorClickThrough();
+        cursorVisible(false);
+        invalidateEntries();
+        if (__lastSel) {
+          var entries = collectEntries();
+          for (var i = 0; i < entries.length; i++) {
+            if (entries[i].m === __lastSel.m && entries[i].s === __lastSel.s
+                && entries[i].k === __lastSel.k) {
+              setSelection(entries[i]);
+              positionCursorAt(entries[i], false);
+              break;
+            }
+          }
+        }
+        return r;
+      } finally {
+        __inPatchedRender = false;
+      }
+    };
+  }
+
   function ensureOsmd() {
     if (osmd) return;
     var OSD = window.opensheetmusicdisplay.OpenSheetMusicDisplay;
@@ -288,9 +316,10 @@
       disableCursor: false,
       followCursor: true
     });
+    patchRender();
   }
 
-  async function loadMusicXml(xml) {
+  async function loadMusicXml(xml, rescan) {
     ensureOsmd();
     // followCursor 会在建 steps map 走光标时把页面滚到谱面末尾，
     // osmd.cursor.reset() 又不会滚回来——全程锁住滚动位置
@@ -304,10 +333,16 @@
       // 光标此刻被放回曲首；藏起，等高亮恢复/光标定位后再显示
       cursorVisible(false);
       invalidateEntries();
-      var map = await buildStepsMap();
-      stepsMap = map.steps;
+      // 全谱走光标约 0.5-1s，是编辑卡顿的大头。编辑器的高亮定位是
+      // delta 校正（不依赖重走步号），所以只在首次加载/换曲时重建
+      // 步号表；内容小改的重渲染直接复用旧表（onset 匹配不上时
+      // highlight 自动退回小节首步，视觉仍由 delta 校正保证）。
+      if (rescan || !stepsMap.length) {
+        var map = await buildStepsMap();
+        stepsMap = map.steps;
+        post({ event: 'ready', totalSteps: map.total, stepsMap: map.steps });
+      }
       window.scrollTo(0, scrollY);
-      post({ event: 'ready', totalSteps: map.total, stepsMap: map.steps });
     } catch (e) {
       window.scrollTo(0, scrollY);
       post({ event: 'error', message: String(e && e.message || e) });
@@ -348,19 +383,23 @@
         switch (cmd.op) {
           case 'load':
             if (typeof cmd.zoom === 'number') zoom = cmd.zoom;
-            await loadMusicXml(cmd.xml);
+            await loadMusicXml(cmd.xml, !!cmd.rescan);
             break;
           case 'highlight':
             if (osmd) {
               var entries = collectEntries();
+              var foundHl = false;
               for (var i = 0; i < entries.length; i++) {
                 if (entries[i].m === cmd.m && entries[i].s === cmd.s
                     && entries[i].k === cmd.k) {
                   setSelection(entries[i]);
                   positionCursorAt(entries[i], !!cmd.reveal);
+                  foundHl = true;
                   break;
                 }
               }
+              window.__ejmLastHighlight = { m: cmd.m, s: cmd.s, k: cmd.k,
+                entries: entries.length, found: foundHl };
             }
             break;
           case 'cursorTo':

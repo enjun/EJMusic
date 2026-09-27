@@ -134,8 +134,11 @@ class SheetWebviewController {
     );
   }
 
-  Future<void> loadMusicXml(String xml, {double? zoom}) async =>
-      _call({'op': 'load', 'xml': xml, 'zoom': ?zoom});
+  /// [rescan] = false 时跳过全谱走光标（步号表约 0.5-1s，是编辑渲染
+  /// 卡顿的大头）：内容小改的重渲染复用已有步号表，高亮定位靠 delta
+  /// 校正不受影响。首次加载或换曲必须 rescan: true。
+  Future<void> loadMusicXml(String xml, {double? zoom, bool rescan = true}) =>
+      _call({'op': 'load', 'xml': xml, 'zoom': ?zoom, 'rescan': rescan});
   Future<void> cursorTo(int step) async =>
       _call({'op': 'cursorTo', 'step': step});
   Future<void> selectStep(int step, {int? entryIdx}) async => _call({

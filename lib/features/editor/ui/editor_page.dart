@@ -49,6 +49,13 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   ScoreEvent? _selected;
   Timer? _renderDebounce;
 
+  /// 渲染重入保护：进行中标记 + 待办合并标记。
+  bool _rendering = false;
+  bool _renderQueued = false;
+
+  /// 步号表是否已就绪（首次加载后为 true；之后编辑重渲染跳过重建）。
+  bool _stepsReady = false;
+
   // 键盘钢琴输入状态：当前八度（中央 C 所在为 4）、时值、附点数。
   int _inputOctave = 4;
   Rational _inputDur = const Rational(1, 1);
@@ -129,6 +136,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         _error = null;
         _selected = null;
       });
+      _stepsReady = false; // 换曲/重载：下次渲染重建步号表
       unawaited(_renderDoc());
     } catch (e) {
       setState(() => _error = e.toString());
@@ -138,15 +146,34 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   Future<void> _renderDoc() async {
     final doc = _doc;
     if (doc == null) return;
+    // 重入保护：渲染进行中到达的请求合并为一次待办（连续按键时
+    // 防抖间隔小于渲染耗时会重叠，曾导致十几秒的连续阻塞假死）
+    if (_rendering) {
+      _renderQueued = true;
+      return;
+    }
+    _rendering = true;
     final sw = Stopwatch()..start();
     try {
       // load 本身按当前缩放渲染，不再先 setZoom（避免一次多余的重渲染，
-      // 打开页面时连续两次全量渲染会吞掉最初的点击）
-      await _sheet.loadMusicXml(scoreToMusicXml(doc), zoom: _zoom);
+      // 打开页面时连续两次全量渲染会吞掉最初的点击）。
+      // 编辑小改不重建步号表（rescan=false 跳过全谱走光标），
+      // 只有首次加载/换曲后才重建。
+      await _sheet.loadMusicXml(
+        scoreToMusicXml(doc),
+        zoom: _zoom,
+        rescan: !_stepsReady,
+      );
       debugPrint('EJM editor: 渲染完成 ${sw.elapsedMilliseconds}ms');
       _restoreHighlight();
     } catch (e) {
       debugPrint('EJM editor: 渲染异常 $e');
+    } finally {
+      _rendering = false;
+      if (_renderQueued && mounted) {
+        _renderQueued = false;
+        unawaited(_renderDoc());
+      }
     }
   }
 
@@ -160,7 +187,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
 
   void _scheduleRender() {
     _renderDebounce?.cancel();
-    _renderDebounce = Timer(const Duration(milliseconds: 400), () {
+    _renderDebounce = Timer(const Duration(milliseconds: 300), () {
       unawaited(_renderDoc());
     });
   }
@@ -172,6 +199,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   }
 
   void _onReady(SheetReady ready) {
+    _stepsReady = true;
     EditorPage.debugTotalSteps = ready.totalSteps;
     EditorPage.debugMappedSteps = ready.stepMeasures.length;
   }
