@@ -42,11 +42,21 @@
   // 分片异步走光标：同步走完长谱会把 JS 阻塞数秒，期间到达的点击
   // 会被输入管线整个丢弃（表现为"点一下没反应，要点两下"）。
   // 每 32 步让出一次事件循环，DOM 已渲染完成，让出的间隙点击正常命中。
+  // 关键：followCursor 会让页面跟着光标走——原来走光标是一个同步块，
+  // 中途不产生绘制帧所以滚动看不见；分片后每个让出点都会真实绘制，
+  // 页面会可见地"滚到谱面后段再跳回来"（每次编辑都跳一下）。
+  // 所以走光标全程关掉 followCursor，并在每个让出点重新钉住滚动位置。
   async function buildStepsMap() {
     osmd.cursor.reset();
     var total = 0;
     var steps = [{ step: 0, quarter: 0, m: -1 }];
     var it = osmd.cursor.iterator;
+    var sx = window.scrollX, sy = window.scrollY;
+    var savedFollow = null;
+    try {
+      savedFollow = osmd.cursor.followCursor;
+      osmd.cursor.followCursor = false;
+    } catch (e0) { /* 老版本无此字段时靠钉滚动兜底 */ }
     while (!it.endReached && total < MAX_STEPS) {
       for (var i = 0; i < 32 && !it.endReached && total < MAX_STEPS; i++) {
         osmd.cursor.next();
@@ -54,8 +64,12 @@
         var m = typeof it.currentMeasureIndex === 'number' ? it.currentMeasureIndex : -1;
         steps.push({ step: total, quarter: quarterAtStep(), m: m });
       }
+      window.scrollTo(sx, sy);
       await new Promise(function (r) { setTimeout(r, 0); });
     }
+    try {
+      if (savedFollow !== null) osmd.cursor.followCursor = savedFollow;
+    } catch (e1) { /* 同上 */ }
     osmd.cursor.reset();
     return { total: total, steps: steps };
   }
