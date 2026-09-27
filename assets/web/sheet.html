@@ -20,6 +20,9 @@
   var osmd = null;
   var zoom = 1.0;
   var MAX_STEPS = 20000;
+  // 最近一次 load 建好的步号表（步号 → {m, quarter}），highlight/select
+  // 按事件身份定位光标时用
+  var stepsMap = [];
 
   function post(event) {
     if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
@@ -36,16 +39,22 @@
     }
   }
 
-  function buildStepsMap() {
+  // 分片异步走光标：同步走完长谱会把 JS 阻塞数秒，期间到达的点击
+  // 会被输入管线整个丢弃（表现为"点一下没反应，要点两下"）。
+  // 每 32 步让出一次事件循环，DOM 已渲染完成，让出的间隙点击正常命中。
+  async function buildStepsMap() {
     osmd.cursor.reset();
     var total = 0;
     var steps = [{ step: 0, quarter: 0, m: -1 }];
-    while (!osmd.cursor.iterator.endReached && total < MAX_STEPS) {
-      osmd.cursor.next();
-      total++;
-      var it = osmd.cursor.iterator;
-      var m = typeof it.currentMeasureIndex === 'number' ? it.currentMeasureIndex : -1;
-      steps.push({ step: total, quarter: quarterAtStep(), m: m });
+    var it = osmd.cursor.iterator;
+    while (!it.endReached && total < MAX_STEPS) {
+      for (var i = 0; i < 32 && !it.endReached && total < MAX_STEPS; i++) {
+        osmd.cursor.next();
+        total++;
+        var m = typeof it.currentMeasureIndex === 'number' ? it.currentMeasureIndex : -1;
+        steps.push({ step: total, quarter: quarterAtStep(), m: m });
+      }
+      await new Promise(function (r) { setTimeout(r, 0); });
     }
     osmd.cursor.reset();
     return { total: total, steps: steps };
@@ -136,6 +145,52 @@
     for (var j = 0; j < g.els.length; j++) g.els[j].style.fill = '#1a73e8';
   }
 
+  // 把绿光标 delta 校正到 entry 的实际位置：OSMD 光标步号与图形事件
+  // 没有可靠解析映射（iterator 小节号在小节边界滞后等），走完步号后
+  // 按所点事件符头的像素差修正光标 img，保证视觉零偏差
+  function nudgeCursorTo(entry) {
+    if (!osmd || !osmd.cursor || !osmd.cursor.cursorElement) return;
+    if (!entry || !entry.els || !entry.els.length) return;
+    try {
+      var rSel = entry.els[0].getBoundingClientRect();
+      var cEl = osmd.cursor.cursorElement;
+      var cRect = cEl.getBoundingClientRect();
+      var dx = (rSel.left + rSel.width / 2) - (cRect.left + cRect.width / 2);
+      var dy = (rSel.top + rSel.height / 2) - (cRect.top + cRect.height / 2);
+      cEl.style.left = (cEl.offsetLeft + dx) + 'px';
+      cEl.style.top = (cEl.offsetTop + dy) + 'px';
+    } catch (e) { /* 光标尚未创建时忽略 */ }
+  }
+
+  // 事件对应的 cursor 步号：优先小节+onset 精确匹配，退回该小节首步
+  function stepForEntry(entry) {
+    var first = null;
+    for (var i = 0; i < stepsMap.length; i++) {
+      var st = stepsMap[i];
+      if (st.m !== entry.m) continue;
+      if (first === null) first = st.step;
+      if (entry.q >= 0 && Math.abs(st.quarter - entry.q) < 1e-6) return st.step;
+    }
+    return first;
+  }
+
+  // 蓝选中 + 绿光标一起落到事件上；reveal 时滚动到光标可见
+  function positionCursorAt(entry, reveal) {
+    if (!osmd || !osmd.cursor) return;
+    var step = stepForEntry(entry);
+    if (step !== null) cursorTo(step, false);
+    nudgeCursorTo(entry);
+    if (reveal) {
+      try {
+        var el = osmd.cursor.cursorElement;
+        if (el && el.scrollIntoView) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      } catch (e) { /* 无 cursorElement 时忽略 */ }
+    }
+    cursorClickThrough();
+  }
+
   // 光标是绝对定位的 img 覆盖层，会挡住其下音符的点击（target=光标，
   // 盖章查找落空走几何兜底，密集处会选错）——设为点击穿透
   function cursorClickThrough() {
@@ -221,7 +276,8 @@
       osmd.cursor.show();
       cursorClickThrough();
       invalidateEntries();
-      var map = buildStepsMap();
+      var map = await buildStepsMap();
+      stepsMap = map.steps;
       window.scrollTo(0, scrollY);
       post({ event: 'ready', totalSteps: map.total, stepsMap: map.steps });
     } catch (e) {
@@ -272,6 +328,7 @@
                 if (entries[i].m === cmd.m && entries[i].s === cmd.s
                     && entries[i].k === cmd.k) {
                   setSelection(entries[i]);
+                  positionCursorAt(entries[i], !!cmd.reveal);
                   break;
                 }
               }
@@ -281,26 +338,14 @@
             cursorTo(cmd.step, true);
             break;
           case 'select':
-            cursorTo(cmd.step, false);
-            // 光标按步号走可能与所点事件有偏差（iterator 的
-            // currentMeasureIndex 在小节边界滞后等），按所点事件的
-            // 实际位置做 delta 校正，保证绿光标可见地落在被点音符上
-            if (typeof cmd.idx === 'number' && osmd.cursor
-                && osmd.cursor.cursorElement) {
-              try {
-                var gSel = collectEntries()[cmd.idx];
-                if (gSel && gSel.els && gSel.els.length) {
-                  var rSel = gSel.els[0].getBoundingClientRect();
-                  var cEl = osmd.cursor.cursorElement;
-                  var cRect = cEl.getBoundingClientRect();
-                  var dxSel = (rSel.left + rSel.width / 2)
-                    - (cRect.left + cRect.width / 2);
-                  var dySel = (rSel.top + rSel.height / 2)
-                    - (cRect.top + cRect.height / 2);
-                  cEl.style.left = (cEl.offsetLeft + dxSel) + 'px';
-                  cEl.style.top = (cEl.offsetTop + dySel) + 'px';
-                }
-              } catch (eSel) {}
+            // 保留兼容：按全局序号选中并定位光标（highlight op 已可
+            // 按 m/s/k 完成同样工作，编辑器已改走 highlight）
+            if (typeof cmd.idx === 'number' && osmd) {
+              var gSel = collectEntries()[cmd.idx];
+              if (gSel) {
+                setSelection(gSel);
+                positionCursorAt(gSel, false);
+              }
             }
             break;
           case 'cursorReset':

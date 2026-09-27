@@ -148,9 +148,11 @@ class SheetWebviewController {
       _call({'op': 'setZoom', 'zoom': zoom});
 
   /// 高亮谱面上的事件 (小节 m, 谱表 s 0基, 声部内事件序号 k)。
-  /// 蓝色填充该音符符头；重渲染后由编辑器在渲染完成时重发。
-  Future<void> highlight(int m, int s, int k) async =>
-      _call({'op': 'highlight', 'm': m, 's': s, 'k': k});
+  /// 蓝色填充该音符符头，同时把绿光标定位到该事件（页面按步号 +
+  /// delta 校正）；[reveal] 时滚动让光标可见。重渲染后由编辑器重发，
+  /// 借此同时恢复蓝选中与绿光标位置。
+  Future<void> highlight(int m, int s, int k, {bool reveal = false}) async =>
+      _call({'op': 'highlight', 'm': m, 's': s, 'k': k, 'reveal': reveal});
 
   /// 集成测试用：在宿主页执行 JS 并返回结果（callAsyncJavaScript 语义）。
   Future<dynamic> debugEvalJs(String functionBody) async {

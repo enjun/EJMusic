@@ -46,12 +46,6 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   final SheetWebviewController _sheet = SheetWebviewController();
   Future<String>? _htmlFuture;
   double _zoom = 1.0;
-
-  /// cursor 步号 → 小节下标（ready 后由渲染桥给出，选中高亮用）。
-  Map<int, int> _stepMeasure = {};
-
-  /// cursor 步号 → onset（四分音符单位），点击高亮精确定位用。
-  Map<int, double> _stepQuarters = {};
   ScoreEvent? _selected;
   Timer? _renderDebounce;
 
@@ -134,8 +128,6 @@ class _EditorPageState extends ConsumerState<EditorPage> {
         _dirty = false;
         _error = null;
         _selected = null;
-        _stepMeasure = {};
-        _stepQuarters = {};
       });
       unawaited(_renderDoc());
     } catch (e) {
@@ -180,10 +172,6 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   }
 
   void _onReady(SheetReady ready) {
-    setState(() {
-      _stepMeasure = ready.stepMeasures;
-      _stepQuarters = ready.stepQuarters;
-    });
     EditorPage.debugTotalSteps = ready.totalSteps;
     EditorPage.debugMappedSteps = ready.stepMeasures.length;
   }
@@ -222,31 +210,10 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       'k=${click.eventIndex} → ${eventLabel(event)}',
     );
     setState(() => _selected = event);
-    // 光标定位到所点事件的精确 step（按小节+onset 匹配；onset 缺失或
-    // 匹配不上时退回该小节第一个步位）。只按小节定位会让高亮落在
-    // 小节第一个音符上，用户看来就是"点谁高亮都不对"。
-    final step = _stepFor(click);
-    if (step != null) {
-      unawaited(_sheet.selectStep(step, entryIdx: click.entryIdx));
-    }
-  }
-
-  /// 所点事件对应的 cursor 步号：优先小节+onset 精确匹配，
-  /// 否则退回该小节第一个步位；无映射时返回 null（光标不动）。
-  int? _stepFor(SheetNoteClicked click) {
-    final q = click.quarter;
-    int? firstOfMeasure;
-    for (final s in _stepMeasure.keys.toList()..sort()) {
-      if (_stepMeasure[s] != click.measure) continue;
-      firstOfMeasure ??= s;
-      if (q != null) {
-        final sq = _stepQuarters[s];
-        if (sq != null && (sq - q).abs() < 1e-6) {
-          return s;
-        }
-      }
-    }
-    return firstOfMeasure;
+    // 蓝选中 + 绿光标一起精确落到所点事件上（页面按小节+onset 匹配
+    // 步号走光标，再按所点事件符头像素差 delta 校正）。只按小节定位
+    // 会让光标落在小节第一个音符上，用户看来就是"点谁高亮都不对"。
+    unawaited(_sheet.highlight(click.measure, click.staff, click.eventIndex));
   }
 
   void _onSheetEvent(SheetEvent event) {
@@ -425,7 +392,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     );
     setState(() {}); // 选中项就地变化，状态条立即刷新
     _afterChange();
-    _revealMeasure(loc.$3, null);
+    _revealEvent(loc.$3, loc.$1.staff - 1, loc.$2, null);
   }
 
   /// 在选中事件之后插入 [e]（无选中则追加到末尾），并滚动定位让用户看见。
@@ -435,30 +402,41 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     final sel = _selected;
     final loc = sel == null ? null : _locate(sel);
     final int measureIndex;
+    final int staff0;
+    final int eventIndex;
     if (loc != null) {
       loc.$1.events.insert(loc.$2 + 1, e);
       measureIndex = loc.$3;
+      staff0 = loc.$1.staff - 1;
+      eventIndex = loc.$2 + 1;
       debugPrint(
         'EJM editor: 插入 ${eventLabel(e)} 于 m=$measureIndex '
-        'staff=${loc.$1.staff} index=${loc.$2 + 1}',
+        'staff=${loc.$1.staff} index=$eventIndex',
       );
     } else {
       final measures = doc.parts.first.measures;
       measures.last.voices.last.events.add(e);
       measureIndex = measures.length - 1;
+      staff0 = measures.last.voices.last.staff - 1;
+      eventIndex = measures.last.voices.last.events.length - 1;
       debugPrint('EJM editor: 无选中，${eventLabel(e)} 追加到末尾 m=$measureIndex');
     }
     setState(() => _selected = e);
     _afterChange();
-    // 必须让用户看见插入结果：滚动到该小节（feedback 时再提示位置）
-    _revealMeasure(
+    // 必须让用户看见插入结果：光标直接落到新事件并滚动可见
+    // （feedback 时再提示位置）。防抖重渲染完成后 _restoreHighlight
+    // 会再次精确恢复蓝选中与绿光标。
+    _revealEvent(
       measureIndex,
+      staff0,
+      eventIndex,
       feedback ? '已在第 ${measureIndex + 1} 小节插入${eventLabel(e)}' : null,
     );
   }
 
-  /// 滚动谱面到指定小节（0 基）；[message] 非空时同时提示。
-  void _revealMeasure(int measureIndex, String? message) {
+  /// 选中高亮 + 绿光标落到指定事件，并滚动使其可见；[message] 非空时提示。
+  void _revealEvent(int measureIndex, int staff0, int eventIndex,
+      String? message) {
     if (!mounted) return;
     if (message != null) {
       ScaffoldMessenger.of(context)
@@ -470,14 +448,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
           ),
         );
     }
-    int? step;
-    for (final s in _stepMeasure.keys.toList()..sort()) {
-      if (_stepMeasure[s] == measureIndex) {
-        step = s;
-        break;
-      }
-    }
-    if (step != null) unawaited(_sheet.cursorTo(step));
+    unawaited(_sheet.highlight(measureIndex, staff0, eventIndex, reveal: true));
   }
 
   /// 全谱事件的一维顺序表（小节序 → 谱表序 → 声部内序），
@@ -521,8 +492,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     final e = v.events[i];
     debugPrint('EJM editor: 方向键选择 m=$mi staff=${v.staff} index=$i');
     setState(() => _selected = e);
-    _sheet.highlight(mi, v.staff - 1, i);
-    _revealMeasure(mi, null);
+    _revealEvent(mi, v.staff - 1, i, null);
   }
 
   void _deleteSelected() {
