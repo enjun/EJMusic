@@ -8,6 +8,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../../core/audio/piano_audio.dart';
 import '../../../core/platform/ime_control.dart';
+import '../../../core/ui/app_theme.dart';
+import '../../../core/ui/components.dart';
 import '../../../core/util/rational.dart';
 import '../../../data/render/sheet_webview.dart';
 import '../../../domain/performance/follow_judge.dart';
@@ -523,7 +525,11 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
                   )
                 : Column(
                     children: [
-                      Expanded(child: _buildScore()),
+                      Expanded(
+                        child: _buildScore(
+                          SheetThemeColors.of(Theme.of(context)),
+                        ),
+                      ),
                       _buildControls(),
                       if (_showKeyboard) _buildKeyboard(),
                     ],
@@ -597,7 +603,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     }
   }
 
-  Widget _buildScore() {
+  Widget _buildScore(SheetThemeColors sheetTheme) {
     // 宿主页只加载一次（稳定 Future，避免 setState 重建 WebView）；曲谱按册注入
     _htmlFuture ??= buildSheetHostHtml();
     return FutureBuilder<String>(
@@ -635,28 +641,24 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
               },
               onLoadStop: (_, _) async {
                 await _sheetController.pageReady;
+                await _sheetController.setThemeFrom(sheetTheme);
                 await _sheetController.loadMusicXml(_xmlFor(_volumeIndex));
               },
             ),
             if (_mode == FollowMode.followAlong && _judge != null)
               Positioned(
-                left: 12,
-                top: 12,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    _judge!.phase == JudgePhase.awaiting
-                        ? '请按亮起的琴键'
-                        : '点击「开始跟弹」',
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
-                  ),
+                left: AppSpacing.md,
+                top: AppSpacing.md,
+                child: OverlayPill(
+                  icon: _judge!.phase == JudgePhase.awaiting
+                      ? Icons.touch_app
+                      : Icons.play_circle_outline,
+                  label: _judge!.phase == JudgePhase.awaiting
+                      ? '请按亮起的琴键'
+                      : '点击「开始跟弹」',
+                  color: _judge!.phase == JudgePhase.awaiting
+                      ? const Color(0xFFFFD54F)
+                      : null,
                 ),
               ),
           ],
@@ -668,8 +670,18 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
   Widget _buildControls() {
     final judge = _judge;
     final isListen = _mode == FollowMode.listen;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainer,
+        border: Border(top: BorderSide(color: scheme.outlineVariant)),
+      ),
+      padding: EdgeInsets.fromLTRB(
+        AppSpacing.pageMargin(context),
+        AppSpacing.xs,
+        AppSpacing.pageMargin(context),
+        AppSpacing.xs,
+      ),
       child: Column(
         children: [
           Row(
@@ -678,20 +690,25 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
                 segments: const [
                   ButtonSegment(
                     value: FollowMode.followAlong,
+                    icon: Icon(Icons.piano, size: 17),
                     label: Text('跟弹'),
                   ),
-                  ButtonSegment(value: FollowMode.listen, label: Text('聆听')),
+                  ButtonSegment(
+                    value: FollowMode.listen,
+                    icon: Icon(Icons.headphones, size: 17),
+                    label: Text('聆听'),
+                  ),
                 ],
                 selected: {_mode},
                 onSelectionChanged: (s) => _switchMode(s.first),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: AppSpacing.sm),
               if (!isListen)
                 FilledButton.icon(
                   onPressed: judge == null || judge.phase == JudgePhase.awaiting
                       ? null
                       : _startFollow,
-                  icon: const Icon(Icons.play_arrow),
+                  icon: const Icon(Icons.play_arrow, size: 20),
                   label: const Text('开始跟弹'),
                 )
               else ...[
@@ -706,6 +723,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
                       ? '继续 (空格)'
                       : '播放 (空格)',
                 ),
+                const SizedBox(width: AppSpacing.xs),
                 IconButton(
                   onPressed: _playing ? _stopAll : null,
                   icon: const Icon(Icons.stop),
@@ -716,7 +734,13 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
           ),
           Row(
             children: [
-              const Text('速度', style: TextStyle(fontSize: 13)),
+              Icon(Icons.speed, size: 16, color: scheme.onSurfaceVariant),
+              const SizedBox(width: AppSpacing.xxs),
+              Text(
+                '速度',
+                style: Theme.of(context).textTheme.labelMedium
+                    ?.copyWith(color: scheme.onSurfaceVariant),
+              ),
               Expanded(
                 child: Slider(
                   value: _speed,
@@ -728,7 +752,18 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
                   onChanged: isListen ? _setSpeed : null,
                 ),
               ),
-              Text('${(_speed * 100).round()}%'),
+              SizedBox(
+                width: 46,
+                child: Text(
+                  '${(_speed * 100).round()}%',
+                  textAlign: TextAlign.end,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: isListen
+                        ? scheme.onSurface
+                        : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
             ],
           ),
         ],
@@ -755,7 +790,7 @@ class _PerformancePageState extends ConsumerState<PerformancePage>
     return SafeArea(
       top: false,
       child: SizedBox(
-        height: 150,
+        height: MediaQuery.sizeOf(context).width < 900 ? 132 : 168,
         child: PianoKeyboard(
           lowMidi: _kbLow,
           highMidi: _kbHigh,

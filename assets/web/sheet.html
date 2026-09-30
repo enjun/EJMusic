@@ -4,11 +4,47 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; background: #ffffff; }
+  /* 纸张化谱面：外层是应用底色，内层是纸张 + 轻阴影。
+     配色由 Dart 侧按当前主题写入 CSS 变量（默认浅色）。 */
+  :root {
+    --ejm-bg: #f7f7fb;
+    --ejm-fg: #191a21;
+    --ejm-paper: #ffffff;
+    --ejm-shadow: rgba(20, 22, 31, 0.10);
+    --ejm-outline: rgba(20, 22, 31, 0.08);
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--ejm-bg);
+    color: var(--ejm-fg);
+  }
   /* 谱面长于视口时允许纵向滚动；横向溢出只有几像素（OSMD 换行余量），
      滚动条只会压住低音谱音符吞掉点击——直接隐藏 */
   body { overflow-y: auto; overflow-x: hidden; }
-  #container { width: 100%; min-height: 100%; }
+  /* 外层应用底色 + 容器纸张色，OSMD 谱面绘制在纸张之上 */
+  #container {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 100%;
+    background: var(--ejm-paper);
+    padding: 20px 22px 28px;
+    transition: background 0.18s ease;
+  }
+  /* 滚动条收细、淡化，避免抢视线 */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(128, 132, 148, 0.35);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(128, 132, 148, 0.55);
+    background-clip: content-box;
+  }
 </style>
 <script src="vendor/osmd-extended.min.js"></script>
 </head>
@@ -422,6 +458,15 @@
               cursorVisible(true);
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }
+            break;
+          case 'setTheme':
+            // 按应用主题写入底色/文字色/纸色，使谱面与全站视觉一致
+            var rt = document.documentElement.style;
+            if (cmd.bg) rt.setProperty('--ejm-bg', cmd.bg);
+            if (cmd.fg) rt.setProperty('--ejm-fg', cmd.fg);
+            if (cmd.paper) rt.setProperty('--ejm-paper', cmd.paper);
+            if (cmd.shadow) rt.setProperty('--ejm-shadow', cmd.shadow);
+            if (cmd.outline) rt.setProperty('--ejm-outline', cmd.outline);
             break;
           case 'setZoom':
             zoom = cmd.zoom;

@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,16 +14,17 @@ class LlmConfig {
   });
 
   factory LlmConfig.defaults() => const LlmConfig(
-        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        model: 'qwen-vl-max',
-        apiKey: '',
-      );
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-vl-max',
+    apiKey: '',
+  );
 
   final String baseUrl;
   final String model;
   final String apiKey;
 
-  bool get isConfigured => baseUrl.isNotEmpty && apiKey.isNotEmpty && model.isNotEmpty;
+  bool get isConfigured =>
+      baseUrl.isNotEmpty && apiKey.isNotEmpty && model.isNotEmpty;
 
   LlmConfig copyWith({String? baseUrl, String? model, String? apiKey}) =>
       LlmConfig(
@@ -49,6 +51,7 @@ const _keyCorrBaseUrl = 'llm.correction.baseUrl';
 const _keyCorrModel = 'llm.correction.model';
 const _keyCorrApiKey = 'llm.correction.apiKey';
 const _keyLastImportDir = 'import.lastDir';
+const _keyThemeMode = 'ui.themeMode';
 
 const _secureStorage = FlutterSecureStorage();
 
@@ -108,13 +111,54 @@ Future<void> saveLastImportDir(String dir) async {
   await prefs.setString(_keyLastImportDir, dir);
 }
 
+/// 界面主题模式：跟随系统 / 浅色 / 深色。
+Future<ThemeMode> loadThemeMode() async {
+  final prefs = await SharedPreferences.getInstance();
+  return switch (prefs.getString(_keyThemeMode)) {
+    'light' => ThemeMode.light,
+    'dark' => ThemeMode.dark,
+    _ => ThemeMode.system,
+  };
+}
+
+Future<void> saveThemeMode(ThemeMode mode) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString(_keyThemeMode, switch (mode) {
+    ThemeMode.light => 'light',
+    ThemeMode.dark => 'dark',
+    ThemeMode.system => 'system',
+  });
+}
+
 /// 应用级 providers。
 final appDatabaseProvider = Provider<AppDatabase>(
   (ref) => throw UnimplementedError('在 main 中 override'),
 );
 
-final llmConfigProvider =
-    AsyncNotifierProvider<LlmConfigNotifier, LlmConfig>(LlmConfigNotifier.new);
+final llmConfigProvider = AsyncNotifierProvider<LlmConfigNotifier, LlmConfig>(
+  LlmConfigNotifier.new,
+);
+
+/// 界面主题模式（同步读取，未加载完成时跟随系统，避免启动闪烁）。
+final themeModeProvider = NotifierProvider<ThemeModeNotifier, ThemeMode>(
+  ThemeModeNotifier.new,
+);
+
+class ThemeModeNotifier extends Notifier<ThemeMode> {
+  @override
+  ThemeMode build() {
+    // 异步补齐磁盘上的取值；默认跟随系统。
+    loadThemeMode().then((mode) {
+      if (ref.mounted && mode != state) state = mode;
+    });
+    return ThemeMode.system;
+  }
+
+  Future<void> set(ThemeMode mode) async {
+    state = mode;
+    await saveThemeMode(mode);
+  }
+}
 
 class LlmConfigNotifier extends AsyncNotifier<LlmConfig> {
   @override

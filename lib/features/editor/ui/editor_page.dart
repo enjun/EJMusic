@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/config/app_settings.dart';
 import '../../../core/platform/ime_control.dart';
+import '../../../core/ui/app_theme.dart';
 import '../../../core/util/rational.dart';
 import '../../../data/render/sheet_webview.dart';
 import '../../../domain/score/convert/to_musicxml.dart';
@@ -66,6 +67,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
 
   /// 曲谱信息卡默认收起：谱面区是编辑主战场，低音谱表需要全部高度。
   bool _metaExpanded = false;
+
+  /// 谱面（OSMD WebView）当前配色，随主题构建更新。
+  SheetThemeColors _sheetTheme = SheetThemeColors.of(ThemeData.light());
 
   /// 键盘 1-6 对应的时值（全音符→三十二分音符）。
   static const List<(String, Rational)> _durPresets = [
@@ -467,8 +471,12 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   }
 
   /// 选中高亮 + 绿光标落到指定事件，并滚动使其可见；[message] 非空时提示。
-  void _revealEvent(int measureIndex, int staff0, int eventIndex,
-      String? message) {
+  void _revealEvent(
+    int measureIndex,
+    int staff0,
+    int eventIndex,
+    String? message,
+  ) {
     if (!mounted) return;
     if (message != null) {
       ScaffoldMessenger.of(context)
@@ -649,6 +657,8 @@ class _EditorPageState extends ConsumerState<EditorPage> {
   Widget build(BuildContext context) {
     final doc = _doc;
     final navigator = Navigator.of(context);
+    // 每次构建刷新谱面配色：WebView 重建（重渲染）时用最新主题重推
+    _sheetTheme = SheetThemeColors.of(Theme.of(context));
     return Focus(
       autofocus: true,
       onKeyEvent: _handleKeyEvent,
@@ -717,15 +727,21 @@ class _EditorPageState extends ConsumerState<EditorPage> {
                     _buildKeyboardHint(),
                     Expanded(child: _buildWebView()),
                     const Divider(height: 1),
-                    _buildSelectionBar(),
+                    Container(
+                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                      padding: EdgeInsets.symmetric(
+                        horizontal: AppSpacing.pageMargin(context),
+                      ),
+                      child: _buildSelectionBar(),
+                    ),
                     if (_metaExpanded)
                       Expanded(
                         flex: 2,
                         child: ListView(
-                          padding: const EdgeInsets.all(12),
+                          padding: const EdgeInsets.all(AppSpacing.md),
                           children: [
                             _buildMetaCard(doc),
-                            const SizedBox(height: 24),
+                            const SizedBox(height: AppSpacing.lg),
                           ],
                         ),
                       )
@@ -827,11 +843,11 @@ class _EditorPageState extends ConsumerState<EditorPage> {
       );
       final pipeline = await ref.read(correctionPipelineProvider.future);
       final result = await pipeline.run(
-            kind: session.kind,
-            doc: session.doc,
-            slices: session.slices,
-            pages: session.pages,
-          );
+        kind: session.kind,
+        doc: session.doc,
+        slices: session.slices,
+        pages: session.pages,
+      );
       changes = result.changes;
       warnings = [
         for (final o in result.pages)
@@ -847,11 +863,15 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     if (!mounted) return;
     Navigator.of(context).pop(); // 关进度对话框
     if (changes.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(warnings.isEmpty
-            ? 'AI 校对完成：未发现需要修改的地方'
-            : 'AI 校对完成：无修改（${warnings.length} 条告警，详见控制台）'),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            warnings.isEmpty
+                ? 'AI 校对完成：未发现需要修改的地方'
+                : 'AI 校对完成：无修改（${warnings.length} 条告警，详见控制台）',
+          ),
+        ),
+      );
       return;
     }
     await showModalBottomSheet(
@@ -869,16 +889,19 @@ class _EditorPageState extends ConsumerState<EditorPage> {
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
                     child: Align(
                       alignment: Alignment.centerLeft,
-                      child: Text('AI 对照原图发现以下修改，确认后应用到当前谱面：',
-                          style: Theme.of(context).textTheme.titleSmall),
+                      child: Text(
+                        'AI 对照原图发现以下修改，确认后应用到当前谱面：',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
                     ),
                   ),
                   Expanded(
                     child: ChangeReviewList(
                       changes: list,
                       warnings: warnings,
-                      onToggle: (i) =>
-                          setSheetState(() => list[i].selected = !list[i].selected),
+                      onToggle: (i) => setSheetState(
+                        () => list[i].selected = !list[i].selected,
+                      ),
                       onSetAll: (v) => setSheetState(() {
                         for (final c in list) {
                           c.selected = v;
@@ -894,7 +917,8 @@ class _EditorPageState extends ConsumerState<EditorPage> {
                         child: FilledButton.icon(
                           icon: const Icon(Icons.check, size: 18),
                           label: Text(
-                              '应用选中（${list.where((c) => c.selected).length} 处）'),
+                            '应用选中（${list.where((c) => c.selected).length} 处）',
+                          ),
                           onPressed: list.any((c) => c.selected)
                               ? () => Navigator.of(sheetContext).pop(true)
                               : null,
@@ -914,8 +938,9 @@ class _EditorPageState extends ConsumerState<EditorPage> {
     applyChanges(_doc!, selected);
     setState(() => _selected = null);
     _afterChange();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('已应用 ${selected.length} 处修改，请检查后保存')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('已应用 ${selected.length} 处修改，请检查后保存')),
+    );
   }
 
   Future<void> _adjustZoom(double delta) async {
@@ -1004,6 +1029,7 @@ class _EditorPageState extends ConsumerState<EditorPage> {
           },
           onLoadStop: (_, _) async {
             await _sheet.pageReady;
+            await _sheet.setThemeFrom(_sheetTheme);
             final doc = _doc;
             if (doc != null) {
               await _sheet.loadMusicXml(scoreToMusicXml(doc), zoom: _zoom);

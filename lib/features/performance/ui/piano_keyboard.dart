@@ -44,9 +44,9 @@ class _PianoKeyboardState extends State<PianoKeyboard> {
 
   /// 窗口内白键（含首端可能缺的黑键归属处理：对齐到 C）。
   List<int> get _whiteKeys => [
-        for (var m = widget.lowMidi; m <= widget.highMidi; m++)
-          if (!_isBlack(m)) m,
-      ];
+    for (var m = widget.lowMidi; m <= widget.highMidi; m++)
+      if (!_isBlack(m)) m,
+  ];
 
   int? _hitKey(Offset local) {
     final size = context.size;
@@ -136,25 +136,40 @@ class _KeyboardPainter extends CustomPainter {
   final Set<int> wrong;
   final Set<int> hint;
 
+  // 与设计系统语义色同源，保证键盘高亮与全站状态色一致
+  static const _whiteIdle = Color(0xFFF6F6F8);
+  static const _whitePressed = Color(0xFFC3C7D4);
+  static const _whiteHint = Color(0xFFFFDE8A);
+  static const _whiteCorrect = Color(0xFF9CDDAF);
+  static const _whiteWrong = Color(0xFFF1A6A1);
+
+  static const _blackIdle = Color(0xFF23252D);
+  static const _blackPressed = Color(0xFF4A4E5C);
+  static const _blackHint = Color(0xFFD69A22);
+  static const _blackCorrect = Color(0xFF2E9E5B);
+  static const _blackWrong = Color(0xFFC0392B);
+
+  static const _labelColor = Color(0xFF8A8D9C);
+
   bool _isBlack(int midi) {
     const blacks = {1, 3, 6, 8, 10};
     return blacks.contains(midi % 12);
   }
 
   Color _whiteTint(int midi) {
-    if (wrong.contains(midi)) return const Color(0xFFE57373);
-    if (correct.contains(midi)) return const Color(0xFF81C784);
-    if (pressed.contains(midi)) return const Color(0xFFB0BEC5);
-    if (hint.contains(midi)) return const Color(0xFFFFD54F);
-    return Colors.white;
+    if (wrong.contains(midi)) return _whiteWrong;
+    if (correct.contains(midi)) return _whiteCorrect;
+    if (pressed.contains(midi)) return _whitePressed;
+    if (hint.contains(midi)) return _whiteHint;
+    return _whiteIdle;
   }
 
   Color _blackTint(int midi) {
-    if (wrong.contains(midi)) return const Color(0xFFC62828);
-    if (correct.contains(midi)) return const Color(0xFF2E7D32);
-    if (pressed.contains(midi)) return const Color(0xFF546E7A);
-    if (hint.contains(midi)) return const Color(0xFFF9A825);
-    return const Color(0xFF222222);
+    if (wrong.contains(midi)) return _blackWrong;
+    if (correct.contains(midi)) return _blackCorrect;
+    if (pressed.contains(midi)) return _blackPressed;
+    if (hint.contains(midi)) return _blackHint;
+    return _blackIdle;
   }
 
   @override
@@ -168,28 +183,60 @@ class _KeyboardPainter extends CustomPainter {
     final blackW = whiteW * 0.62;
     final blackH = size.height * 0.62;
 
-    final bgPaint = Paint()..color = const Color(0xFF121212);
-    canvas.drawRect(Offset.zero & size, bgPaint);
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..color = const Color(0xFF0E0F14),
+    );
 
-    // 白键
+    // 白键：底部圆角 + 键缝，末段留出指板渐暗区
+    final whiteRadius = Radius.circular(whiteW * 0.16);
+    final seam = Paint()
+      ..color = const Color(0x14000000)
+      ..strokeWidth = 1;
     for (var i = 0; i < whites.length; i++) {
       final m = whites[i];
-      final rect = Rect.fromLTWH(i * whiteW + 0.5, 0.5, whiteW - 1, size.height - 1);
-      canvas.drawRect(rect, Paint()..color = _whiteTint(m));
-      // C 标记
+      final rect = Rect.fromLTWH(i * whiteW + 0.5, 0, whiteW - 1, size.height);
+      canvas.drawRRect(
+        RRect.fromRectAndCorners(
+          rect,
+          bottomLeft: whiteRadius,
+          bottomRight: whiteRadius,
+        ),
+        Paint()..color = _whiteTint(m),
+      );
+
+      // 键缝，让相邻白键有清晰分隔
+      canvas.drawLine(
+        Offset(i * whiteW + 0.5, 0),
+        Offset(i * whiteW + 0.5, size.height),
+        seam,
+      );
+
+      // C 键标注
       if (m % 12 == 0) {
         final tp = TextPainter(
           text: TextSpan(
             text: 'C${m ~/ 12 - 1}',
-            style: TextStyle(fontSize: whiteW * 0.38, color: const Color(0xFF9E9E9E)),
+            style: TextStyle(
+              fontSize: (whiteW * 0.34).clamp(9.0, 13.0),
+              color: _labelColor,
+              fontWeight: FontWeight.w500,
+            ),
           ),
           textDirection: TextDirection.ltr,
         )..layout();
-        tp.paint(canvas, Offset(i * whiteW + (whiteW - tp.width) / 2, size.height - tp.height - 3));
+        tp.paint(
+          canvas,
+          Offset(
+            i * whiteW + (whiteW - tp.width) / 2,
+            size.height - tp.height - 5,
+          ),
+        );
       }
     }
 
-    // 黑键
+    // 黑键：圆角 + 落地阴影 + 顶部高光
+    final blackRadius = Radius.circular(blackW * 0.22);
     for (var i = 0; i < whites.length - 1; i++) {
       final left = whites[i];
       final right = whites[i + 1];
@@ -198,10 +245,32 @@ class _KeyboardPainter extends CustomPainter {
       if (black < lowMidi || black > highMidi) continue;
       final bx = (i + 1) * whiteW - blackW / 2;
       final rect = Rect.fromLTWH(bx, 0, blackW, blackH);
-      final rrect = RRect.fromRectAndCorners(rect,
-          bottomLeft: const Radius.circular(3),
-          bottomRight: const Radius.circular(3));
+      final rrect = RRect.fromRectAndCorners(
+        rect,
+        bottomLeft: blackRadius,
+        bottomRight: blackRadius,
+      );
+
+      canvas.drawRRect(
+        rrect.shift(const Offset(0, 2)),
+        Paint()
+          ..color = const Color(0x40000000)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+      );
       canvas.drawRRect(rrect, Paint()..color = _blackTint(black));
+
+      if (!pressed.contains(black) &&
+          !correct.contains(black) &&
+          !wrong.contains(black) &&
+          !hint.contains(black)) {
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(bx + 1.5, 1, blackW - 3, blackH * 0.34),
+            Radius.circular(blackW * 0.18),
+          ),
+          Paint()..color = const Color(0x1AFFFFFF),
+        );
+      }
     }
   }
 

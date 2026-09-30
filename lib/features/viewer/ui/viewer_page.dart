@@ -2,13 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/ui/app_theme.dart';
+import '../../../core/ui/components.dart';
 import '../../../data/render/sheet_webview.dart';
 import '../../../domain/score/convert/split_volume.dart';
 import '../../../domain/score/convert/to_musicxml.dart';
 import '../../generation/logic/generation_controller.dart';
 import '../../library/library_providers.dart';
 
-final _sheetControllerProvider = Provider.autoDispose<SheetWebviewController>((ref) {
+final _sheetControllerProvider = Provider.autoDispose<SheetWebviewController>((
+  ref,
+) {
   final c = SheetWebviewController();
   ref.onDispose(c.dispose);
   return c;
@@ -50,14 +54,19 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
       setState(() => _volumes = vols);
     } catch (e) {
       if (mounted) {
-        setState(() => _error = e.toString().replaceFirst(RegExp(r'^Exception:\s*'), ''));
+        setState(
+          () =>
+              _error = e.toString().replaceFirst(RegExp(r'^Exception:\s*'), ''),
+        );
       }
     }
   }
 
   String _xmlFor(int index) {
     return _volumeXml.putIfAbsent(
-        index, () => scoreToMusicXml(_volumes![index].document));
+      index,
+      () => scoreToMusicXml(_volumes![index].document),
+    );
   }
 
   @override
@@ -81,10 +90,7 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
                   ? () => _switchVolume(controller, _volumeIndex - 1)
                   : null,
             ),
-            Center(
-              child: Text('第 ${_volumeIndex + 1}/$total 册',
-                  style: const TextStyle(fontSize: 14)),
-            ),
+            _BarChip(label: '第 ${_volumeIndex + 1}/$total 册'),
             IconButton(
               tooltip: '下一册',
               icon: const Icon(Icons.navigate_next),
@@ -92,12 +98,15 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
                   ? () => _switchVolume(controller, _volumeIndex + 1)
                   : null,
             ),
+            const _BarDivider(),
           ],
+          const _BarDivider(),
           IconButton(
             icon: const Icon(Icons.zoom_out),
             tooltip: '缩小',
             onPressed: () => _adjustZoom(controller, -0.1),
           ),
+          _BarChip(label: '${(_zoom * 100).round()}%'),
           IconButton(
             icon: const Icon(Icons.zoom_in),
             tooltip: '放大',
@@ -108,20 +117,25 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
             tooltip: '光标回到开头',
             onPressed: () => controller.cursorReset(),
           ),
+          const SizedBox(width: AppSpacing.xs),
         ],
       ),
       body: _error != null
-          ? Center(child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(_error!, textAlign: TextAlign.center),
-            ))
+          ? EmptyHint(
+              icon: Icons.error_outline,
+              title: '无法显示曲谱',
+              message: _error,
+            )
           : volumes == null
-              ? const Center(child: CircularProgressIndicator())
-              : _buildWebView(controller),
+          ? const Center(child: CircularProgressIndicator())
+          : _buildWebView(controller, SheetThemeColors.of(Theme.of(context))),
     );
   }
 
-  Widget _buildWebView(SheetWebviewController controller) {
+  Widget _buildWebView(
+    SheetWebviewController controller,
+    SheetThemeColors sheetTheme,
+  ) {
     // 宿主页只加载一次；曲谱按册经 loadMusicXml 注入
     _htmlFuture ??= buildSheetHostHtml();
     return FutureBuilder<String>(
@@ -160,25 +174,18 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
               },
               onLoadStop: (_, _) async {
                 await controller.pageReady;
+                await controller.setThemeFrom(sheetTheme);
                 await controller.setZoom(_zoom);
                 await controller.loadMusicXml(_xmlFor(_volumeIndex));
               },
             ),
             if (_totalSteps != null)
               Positioned(
-                right: 12,
-                bottom: 12,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    '光标步数 $_totalSteps',
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
-                  ),
+                right: AppSpacing.md,
+                bottom: AppSpacing.md,
+                child: OverlayPill(
+                  icon: Icons.timeline,
+                  label: '光标步数 $_totalSteps',
                 ),
               ),
           ],
@@ -187,7 +194,10 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
     );
   }
 
-  Future<void> _switchVolume(SheetWebviewController controller, int index) async {
+  Future<void> _switchVolume(
+    SheetWebviewController controller,
+    int index,
+  ) async {
     if (_volumes == null || index < 0 || index >= _volumes!.length) return;
     setState(() {
       _volumeIndex = index;
@@ -209,10 +219,58 @@ class _ViewerPageState extends ConsumerState<ViewerPage> {
     }
   }
 
-  Future<void> _adjustZoom(SheetWebviewController controller, double delta) async {
+  Future<void> _adjustZoom(
+    SheetWebviewController controller,
+    double delta,
+  ) async {
     setState(() {
       _zoom = (_zoom + delta).clamp(0.5, 2.5);
     });
     await controller.setZoom(_zoom);
   }
+}
+
+/// AppBar 内的信息胶囊（册数 / 缩放）。
+class _BarChip extends StatelessWidget {
+  const _BarChip({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.xs,
+        vertical: 5,
+      ),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+      ),
+      child: Text(
+        label,
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: scheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
+
+class _BarDivider extends StatelessWidget {
+  const _BarDivider();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+    child: SizedBox(
+      height: 20,
+      child: VerticalDivider(
+        width: 1,
+        color: Theme.of(context).colorScheme.outlineVariant,
+      ),
+    ),
+  );
 }

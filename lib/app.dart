@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/config/app_settings.dart';
+import 'core/ui/app_theme.dart';
 import 'features/convert/ui/convert_page.dart';
 import 'features/correction/ui/correction_page.dart';
 import 'features/editor/ui/editor_page.dart';
@@ -20,14 +21,8 @@ final appRouter = GoRouter(
   // 调试用：设 EJMUSIC_DEBUG_LOCATION 可让 App 启动直达指定页面
   initialLocation: Platform.environment['EJMUSIC_DEBUG_LOCATION'] ?? '/',
   routes: [
-    GoRoute(
-      path: '/',
-      builder: (context, state) => const LibraryPage(),
-    ),
-    GoRoute(
-      path: '/import',
-      builder: (context, state) => const ImportPage(),
-    ),
+    GoRoute(path: '/', builder: (context, state) => const LibraryPage()),
+    GoRoute(path: '/import', builder: (context, state) => const ImportPage()),
     GoRoute(
       path: '/settings',
       builder: (context, state) => const SettingsPage(),
@@ -124,10 +119,10 @@ class _EJMusicAppState extends ConsumerState<EJMusicApp> {
   Widget build(BuildContext context) {
     return MaterialApp.router(
       title: 'EJMusic',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4C6FBF)),
-        useMaterial3: true,
-      ),
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      themeMode: ref.watch(themeModeProvider),
       routerConfig: appRouter,
     );
   }
